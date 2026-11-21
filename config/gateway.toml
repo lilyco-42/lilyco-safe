@@ -1,0 +1,23 @@
+[server]
+bind = "0.0.0.0:8090"
+public_url = "https://dev.lain42.top/relay"
+portal_verify_url = "http://127.0.0.1:80/studio/api/me"
+admin_key_env = "RELAY_ADMIN_KEY"
+
+[storage]
+db_path = "./data/lilyco-relay.db"
+i18n_dir = "./config/i18n"
+models_file = "./config/models.toml"
+default_lang = "zh"
+
+[risk]
+max_rpm_per_ip = 60
+max_auth_fail_per_ip = 10
+lockout_secs = 900
+max_credits_per_req = 500
+
+[security]
+trusted_proxies = ["127.0.0.1", "::1"]
+blocked_ips = []
+require_paid_wallet = true
+affiliate_rate_bps = 1500

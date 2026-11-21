@@ -1,0 +1,65 @@
+# Multi-upstream AI model routing & pricing (1 CNY = 10 real paid credits)
+
+[[channels]]
+id = "gemini-aistudio"
+provider = "gemini_openai"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+api_key_env = "GEMINI_API_KEY"
+weight = 100
+enabled = true
+
+[[channels]]
+id = "openrouter-main"
+provider = "openrouter"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+weight = 90
+enabled = true
+
+[[channels]]
+id = "deepseek-official"
+provider = "openai_compat"
+base_url = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+weight = 85
+enabled = true
+
+[[models]]
+id = "gemini-2.5-flash"
+channel_id = "gemini-aistudio"
+upstream_model = "gemini-2.5-flash"
+input_per_m = 10
+output_per_m = 40
+allow_free = false
+
+[[models]]
+id = "gemini-2.5-pro"
+channel_id = "gemini-aistudio"
+upstream_model = "gemini-2.5-pro"
+input_per_m = 35
+output_per_m = 140
+allow_free = false
+
+[[models]]
+id = "claude-sonnet-4"
+channel_id = "openrouter-main"
+upstream_model = "anthropic/claude-sonnet-4"
+input_per_m = 65
+output_per_m = 220
+allow_free = false
+
+[[models]]
+id = "deepseek-v3"
+channel_id = "deepseek-official"
+upstream_model = "deepseek-chat"
+input_per_m = 20
+output_per_m = 80
+allow_free = false
+
+[[models]]
+id = "free:qwen3-8b"
+channel_id = "openrouter-main"
+upstream_model = "qwen/qwen3-8b:free"
+input_per_m = 0
+output_per_m = 0
+allow_free = true

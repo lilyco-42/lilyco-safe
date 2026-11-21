@@ -1,0 +1,9 @@
+[messages]
+unauthorized = "鉴权失败：请提供有效的 sk-l42- API Key 或主站登录令牌"
+ip_blocked = "风控拦截：当前 IP 已被封禁或触发高频防刷保护，请稍后再试"
+rate_limited = "请求过于频繁：已触发单 IP / 单密钥限流保护"
+insufficient_paid = "实付余额不足：AI API 属于高成本不可复制算力，仅支持实付余额调用（不可使用签到/赠送积分）"
+drain_guard = "异常消耗熔断：检测到短时间高频大额扣费，密钥已临时保护锁定"
+model_not_found = "模型不存在或当前渠道已下线"
+upstream_failed = "上游服务暂时不可用，本次请求已自动退还预扣额度（0 扣费）"
+invalid_input = "零信任校验拒绝：请求参数类型不合法或包含未声明字段"

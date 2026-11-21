@@ -1,0 +1,9 @@
+[messages]
+unauthorized = "Unauthorized: provide a valid sk-l42- API key or portal session token"
+ip_blocked = "Risk Blocked: client IP is blocked or locked due to anti-abuse protection"
+rate_limited = "Rate Limited: per-IP or per-key RPM limit exceeded"
+insufficient_paid = "Insufficient paid balance: AI API requires real paid credits (free/check-in bonus points cannot be used)"
+drain_guard = "Anomaly Circuit Breaker: rapid credit drain detected; key temporarily frozen"
+model_not_found = "Model not found or upstream channel disabled"
+upstream_failed = "Upstream unavailable; pre-held credits were automatically refunded (0 charged)"
+invalid_input = "Zero-trust validation rejected: invalid field type or unknown field"
