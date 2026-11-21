@@ -13,8 +13,10 @@ use relay_risk::RiskEngine;
 use state::{AppState, RuntimeBundle};
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
 
 pub fn build_app(state: AppState) -> Router {
+    let web_dir = std::env::var("RELAY_WEB_DIR").unwrap_or_else(|_| "./web_dist".into());
     Router::new()
         .route("/api/v1/health", get(handlers::api_health))
         .route("/api/v1/me", get(handlers::api_me))
@@ -28,6 +30,7 @@ pub fn build_app(state: AppState) -> Router {
         .route("/api/v1/admin/risk/unblock_ip", post(handlers::api_admin_unblock_ip))
         .route("/api/v1/admin/topup", post(handlers::api_admin_topup))
         .route("/mcp", post(handlers::api_mcp))
+        .fallback_service(ServeDir::new(web_dir))
         .layer(CompressionLayer::new())
         .layer(CorsLayer::permissive())
         .with_state(state)
