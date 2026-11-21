@@ -47,6 +47,35 @@ export interface KeyIssueResp {
   api_key: string;
 }
 
+export interface WalletInfo {
+  username: string;
+  paid_credits: number;
+  bonus_credits: number;
+  affiliate_credits: number;
+}
+
+export interface ApiKeyItem {
+  id: string;
+  username: string;
+  quota_limit: number;
+  used_credits: number;
+}
+
+export interface UsageItem {
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  credits_charged: number;
+}
+
+export interface MeResp {
+  ok: boolean;
+  wallet: WalletInfo;
+  keys: ApiKeyItem[];
+  usage: UsageItem[];
+  referral_code: string;
+}
+
 const API_BASE = (import.meta.env.VITE_RELAY_API as string | undefined) ?? "";
 
 async function parseJsonOrThrow<T>(r: Response): Promise<T> {
@@ -83,6 +112,22 @@ export async function issueSubKey(portalToken: string, req: KeyIssueReq): Promis
     body: JSON.stringify(req),
   });
   return parseJsonOrThrow<KeyIssueResp>(r);
+}
+
+export async function fetchMe(portalToken: string): Promise<MeResp> {
+  const r = await fetch(`${API_BASE}/api/v1/me`, {
+    headers: { Authorization: `Bearer ${portalToken.trim()}` },
+  });
+  return parseJsonOrThrow<MeResp>(r);
+}
+
+export async function revokeSubKey(portalToken: string, keyId: string): Promise<void> {
+  const r = await fetch(`${API_BASE}/api/v1/keys/revoke`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${portalToken.trim()}` },
+    body: JSON.stringify({ key_id: keyId }),
+  });
+  await parseJsonOrThrow<{ ok: boolean }>(r);
 }
 
 export async function toggleBlockIp(
