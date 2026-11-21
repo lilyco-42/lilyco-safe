@@ -17,10 +17,13 @@ use tower_http::cors::CorsLayer;
 pub fn build_app(state: AppState) -> Router {
     Router::new()
         .route("/api/v1/health", get(handlers::api_health))
+        .route("/api/v1/me", get(handlers::api_me))
         .route("/v1/models", get(handlers::api_list_models))
         .route("/v1/chat/completions", post(handlers::api_openai_chat))
         .route("/v1/messages", post(handlers::api_anthropic_messages))
         .route("/api/v1/keys", post(handlers::api_issue_key))
+        .route("/api/v1/keys/revoke", post(handlers::api_revoke_key))
+        .route("/api/v1/affiliate/bind", post(handlers::api_bind_affiliate))
         .route("/api/v1/admin/risk/block_ip", post(handlers::api_admin_block_ip))
         .route("/api/v1/admin/risk/unblock_ip", post(handlers::api_admin_unblock_ip))
         .route("/api/v1/admin/topup", post(handlers::api_admin_topup))

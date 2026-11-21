@@ -22,6 +22,20 @@ pub struct IpActionReq {
     pub ip: String,
 }
 
+/// Strict key revoke payload (<= 4 fields, deny_unknown_fields).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevokeKeyReq {
+    pub key_id: String,
+}
+
+/// Strict affiliate referrer bind payload (<= 4 fields, deny_unknown_fields).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AffiliateBindReq {
+    pub referrer: String,
+}
+
 /// Strict real-money topup webhook payload (<= 4 fields, deny_unknown_fields).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -211,41 +225,98 @@ pub async fn api_anthropic_messages(
     .into_response()
 }
 
-pub async fn api_issue_key(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-    Json(req): Json<KeyIssueReq>,
-) -> Response {
-    let Some(tok) = AppState::extract_bearer(&headers) else {
-        return st.err_response(&headers, RelayError::Unauthorized("missing portal token".into()));
-    };
+async fn resolve_portal_user(st: &AppState, headers: &HeaderMap) -> Result<String, RelayError> {
+    let tok = AppState::extract_bearer(headers)
+        .ok_or_else(|| RelayError::Unauthorized("missing portal token".into()))?;
     let verify_url = &st.runtime.cfg.server.portal_verify_url;
-    let resp = st
+    let r = st
         .runtime
         .portal_client
         .get(verify_url)
         .bearer_auth(&tok)
         .send()
-        .await;
-    let Ok(r) = resp else {
-        return st.err_response(&headers, RelayError::Unauthorized("portal auth unavailable".into()));
-    };
-    let Ok(v) = r.json::<serde_json::Value>().await else {
-        return st.err_response(&headers, RelayError::Unauthorized("invalid portal response".into()));
-    };
-    let Some(uname) = v.get("username").or_else(|| v.pointer("/account/username")).and_then(|x| x.as_str()) else {
-        return st.err_response(&headers, RelayError::Unauthorized("portal token invalid".into()));
-    };
+        .await
+        .map_err(|_| RelayError::Unauthorized("portal auth unavailable".into()))?;
+    let v: serde_json::Value = r
+        .json()
+        .await
+        .map_err(|_| RelayError::Unauthorized("invalid portal response".into()))?;
+    let uname = v
+        .get("username")
+        .or_else(|| v.pointer("/account/username"))
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| RelayError::Unauthorized("portal token invalid".into()))?;
     let paid = v
         .get("points_balance")
         .or_else(|| v.pointer("/points/balance"))
         .and_then(|x| x.as_u64())
         .unwrap_or(0);
-    if let Err(e) = st.ledger.sync_portal_wallet(uname, paid).await {
-        return st.err_response(&headers, e);
-    }
-    match st.ledger.issue_key(uname, &req).await {
+    st.ledger.sync_portal_wallet(uname, paid).await?;
+    Ok(uname.to_string())
+}
+
+pub async fn api_me(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    let uname = match resolve_portal_user(&st, &headers).await {
+        Ok(u) => u,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    let wallet = match st.ledger.get_wallet(&uname).await {
+        Ok(w) => w,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    let keys = st.ledger.list_keys(&uname).await.unwrap_or_default();
+    let usage = st.ledger.list_usage(&uname).await.unwrap_or_default();
+    Json(json!({
+        "ok": true,
+        "wallet": wallet,
+        "keys": keys,
+        "usage": usage,
+        "referral_code": uname
+    }))
+    .into_response()
+}
+
+pub async fn api_issue_key(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<KeyIssueReq>,
+) -> Response {
+    let uname = match resolve_portal_user(&st, &headers).await {
+        Ok(u) => u,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    match st.ledger.issue_key(&uname, &req).await {
         Ok((secret, rec)) => Json(json!({ "ok": true, "api_key": secret, "key": rec })).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_revoke_key(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<RevokeKeyReq>,
+) -> Response {
+    let uname = match resolve_portal_user(&st, &headers).await {
+        Ok(u) => u,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    match st.ledger.revoke_key(&uname, &req.key_id).await {
+        Ok(()) => Json(json!({ "ok": true, "revoked": req.key_id })).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_bind_affiliate(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<AffiliateBindReq>,
+) -> Response {
+    let uname = match resolve_portal_user(&st, &headers).await {
+        Ok(u) => u,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    match st.ledger.bind_referrer(&uname, &req.referrer).await {
+        Ok(()) => Json(json!({ "ok": true, "referrer": req.referrer })).into_response(),
         Err(e) => st.err_response(&headers, e),
     }
 }

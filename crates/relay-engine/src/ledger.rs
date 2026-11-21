@@ -26,6 +26,15 @@ pub struct ApiKeyRecord {
     pub used_credits: u64,
 }
 
+/// Usage audit log entry (4 fields, Rule of 4).
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageEntry {
+    pub model: String,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub credits_charged: u64,
+}
+
 /// Pre-hold receipt for atomic settlement or refund (4 fields, Rule of 4).
 #[derive(Debug, Clone)]
 pub struct HoldReceipt {
@@ -214,6 +223,62 @@ impl RelayLedger {
             used_credits: 0,
         };
         Ok((secret, rec))
+    }
+
+    pub async fn list_keys(&self, username: &str) -> Result<Vec<ApiKeyRecord>, RelayError> {
+        let u = username.trim().to_ascii_lowercase();
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, username, quota_limit, used_credits FROM relay_keys WHERE username = ?1 AND active = 1 ORDER BY created_unix DESC",
+                [u.as_str()],
+            )
+            .await
+            .map_err(map_db)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(map_db)? {
+            out.push(ApiKeyRecord {
+                id: col_str(&row, 0),
+                username: col_str(&row, 1),
+                quota_limit: col_u64(&row, 2),
+                used_credits: col_u64(&row, 3),
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn revoke_key(&self, username: &str, key_id: &str) -> Result<(), RelayError> {
+        let u = username.trim().to_ascii_lowercase();
+        self.conn
+            .execute(
+                "UPDATE relay_keys SET active = 0 WHERE id = ?1 AND username = ?2",
+                (key_id.trim(), u.as_str()),
+            )
+            .await
+            .map_err(map_db)?;
+        Ok(())
+    }
+
+    pub async fn list_usage(&self, username: &str) -> Result<Vec<UsageEntry>, RelayError> {
+        let u = username.trim().to_ascii_lowercase();
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT model, prompt_tokens, completion_tokens, credits_charged FROM relay_usage_logs WHERE username = ?1 ORDER BY created_unix DESC LIMIT 50",
+                [u.as_str()],
+            )
+            .await
+            .map_err(map_db)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(map_db)? {
+            out.push(UsageEntry {
+                model: col_str(&row, 0),
+                prompt_tokens: col_u64(&row, 1),
+                completion_tokens: col_u64(&row, 2),
+                credits_charged: col_u64(&row, 3),
+            });
+        }
+        Ok(out)
     }
 
     pub async fn verify_api_key(
