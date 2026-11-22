@@ -133,9 +133,9 @@ export function ChatPanel({
   const isOverseas = selectedModel.startsWith("gemini-") || selectedModel.startsWith("claude-");
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "290px 1fr", gap: 16, alignItems: "start" }}>
-      {/* Left Settings Card */}
-      <div className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+    <div className="playground-layout">
+      {/* Left Settings Pane */}
+      <div className="card playground-pane" style={{ gap: 12, overflowY: "auto" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <h3 className="card-title">演练场配置</h3>
           <span className="pill pill-ok" style={{ fontSize: 11 }}>SSE 真流式</span>
@@ -218,8 +218,8 @@ export function ChatPanel({
       </div>
 
       {/* Right Chat Stream */}
-      <div className="card" style={{ display: "flex", flexDirection: "column", minHeight: 540 }}>
-        <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 14, marginBottom: 14 }}>
+      <div className="card playground-pane">
+        <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 14, marginBottom: 14, paddingRight: 4 }}>
           {turns.length === 0 && (
             <div style={{ margin: "auto", textAlign: "center", color: "var(--text-muted)", padding: 28, maxWidth: 480 }}>
               <Bot size={36} style={{ opacity: 0.45, marginBottom: 8 }} />
@@ -291,23 +291,34 @@ export function ChatPanel({
           ))}
         </div>
 
-        <div style={{ display: "flex", gap: 10 }}>
-          <input
-            className="input"
-            placeholder="输入问题，按 Enter 实时流式输出..."
+        <div className="composer-box">
+          <textarea
+            className="composer-textarea"
+            rows={2}
+            placeholder="输入问题，按 Enter 实时流式发送（Shift + Enter 换行）..."
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleSend();
+              }
+            }}
           />
-          {busy ? (
-            <button className="btn btn-danger" onClick={handleStop}>
-              <Square size={14} /> 停止
-            </button>
-          ) : (
-            <button className="btn btn-primary" onClick={() => handleSend()}>
-              <Send size={15} /> 发送
-            </button>
-          )}
+          <div className="composer-footer">
+            <span className="mono" style={{ fontSize: 11.5, color: "var(--text-muted)" }}>
+              {selectedModel} · {apiKey.trim() ? "Key 已就绪" : "请先生成或填入 Key"}
+            </span>
+            {busy ? (
+              <button className="btn btn-sm btn-danger" onClick={handleStop}>
+                <Square size={13} /> 停止生成
+              </button>
+            ) : (
+              <button className="btn btn-sm btn-primary" onClick={() => handleSend()}>
+                <Send size={13} /> 发送消息
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
