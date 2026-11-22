@@ -1,13 +1,14 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
 
-use axum::extract::{ConnectInfo, State};
+use axum::extract::{ConnectInfo, Path, State};
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use relay_core::{
-    AnthropicMsgReq, ChatReq, ClientIp, KeyIssueReq, PricingRate, RelayError,
+    AnthropicMsgReq, ChannelUpsertReq, ChatReq, ClientIp, EmbeddingReq, ImageGenReq, KeyIssueReq,
+    PricingRate, RedeemCodeReq, RedemptionCreateReq, RelayError, RerankReq,
 };
 use relay_engine::UpstreamReply;
 use serde::Deserialize;
@@ -111,13 +112,15 @@ async fn execute_chat_pipeline(
         .catalog()
         .find_model(&req.model)
         .ok_or_else(|| RelayError::ModelNotFound(format!("unknown model {}", req.model)))?;
-    let key_rec = match st.ledger.verify_api_key(&raw_key, &model.id).await {
+    let verified = match st.ledger.verify_api_key(&raw_key, &model.id).await {
         Ok(k) => k,
         Err(e) => {
             st.risk.record_auth_failure(ip);
             return Err(e);
         }
     };
+    st.risk.check_key_ip_whitelist(ip, &verified.allowed_ips)?;
+    let key_rec = verified.record;
     let rate = PricingRate {
         input_per_m: model.input_per_m,
         output_per_m: model.output_per_m,
@@ -131,7 +134,8 @@ async fn execute_chat_pipeline(
     st.risk.check_key_spend(&key_rec.id, est_hold)?;
     let hold = st.ledger.pre_hold_paid(&key_rec, est_hold).await?;
 
-    match st.router.call_chat(model, req).await {
+    let pool = st.ledger.find_live_channels(&model.id).await.unwrap_or_default();
+    match st.router.call_chat_with_pool(model, req, &pool).await {
         Ok(reply) => {
             let actual = rate.calculate_credits(reply.usage);
             let _ = st.ledger.settle_hold(&hold, &model.id, reply.usage, actual).await;
@@ -366,6 +370,189 @@ pub async fn api_admin_topup(
     let bps = st.runtime.cfg.security.affiliate_rate_bps;
     match st.ledger.credit_real_topup(&req.order_id, &req.username, req.credits, bps).await {
         Ok(comm) => Json(json!({ "ok": true, "credited": req.credits, "affiliate_commission": comm })).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_get_model(
+    State(st): State<AppState>,
+    Path(model_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(m) = st.router.catalog().find_model(&model_id) else {
+        return st.err_response(&headers, RelayError::ModelNotFound(model_id));
+    };
+    Json(json!({
+        "id": m.id, "object": "model", "owned_by": m.channel_id,
+        "input_per_m": m.input_per_m, "output_per_m": m.output_per_m, "allow_free": m.allow_free
+    }))
+    .into_response()
+}
+
+async fn forward_paid_endpoint<T: serde::Serialize>(
+    st: &AppState,
+    ip: &ClientIp,
+    headers: &HeaderMap,
+    model_id: &str,
+    path_suffix: &str,
+    body: &T,
+) -> Result<serde_json::Value, RelayError> {
+    st.risk.check_ip(ip)?;
+    let raw_key = AppState::extract_bearer(headers).ok_or_else(|| {
+        st.risk.record_auth_failure(ip);
+        RelayError::Unauthorized("missing bearer api key".into())
+    })?;
+    let model = st
+        .router
+        .catalog()
+        .find_model(model_id)
+        .ok_or_else(|| RelayError::ModelNotFound(format!("unknown model {model_id}")))?;
+    let verified = st.ledger.verify_api_key(&raw_key, &model.id).await?;
+    st.risk.check_key_ip_whitelist(ip, &verified.allowed_ips)?;
+    let hold_cost = if model.allow_free { 0 } else { 1 };
+    st.risk.check_key_spend(&verified.record.id, hold_cost)?;
+    let hold = st.ledger.pre_hold_paid(&verified.record, hold_cost).await?;
+    match st.router.forward_json_endpoint(model, path_suffix, body).await {
+        Ok(val) => {
+            let _ = st.ledger.settle_hold(&hold, &model.id, relay_core::TokenUsage::default(), hold_cost).await;
+            Ok(val)
+        }
+        Err(e) => {
+            let _ = st.ledger.refund_hold(&hold, &model.id).await;
+            Err(e)
+        }
+    }
+}
+
+pub async fn api_embeddings(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(req): Json<EmbeddingReq>,
+) -> Response {
+    let ip = match client_ip_from(&st, peer, &headers) {
+        Ok(v) => v,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    match forward_paid_endpoint(&st, &ip, &headers, &req.model, "embeddings", &req).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_images(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(req): Json<ImageGenReq>,
+) -> Response {
+    let ip = match client_ip_from(&st, peer, &headers) {
+        Ok(v) => v,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    match forward_paid_endpoint(&st, &ip, &headers, &req.model, "images/generations", &req).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_rerank(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(req): Json<RerankReq>,
+) -> Response {
+    let ip = match client_ip_from(&st, peer, &headers) {
+        Ok(v) => v,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    match forward_paid_endpoint(&st, &ip, &headers, &req.model, "rerank", &req).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_dashboard_stats(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    match st.ledger.dashboard_stats().await {
+        Ok(stats) => Json(json!({ "ok": true, "stats": stats, "risk": st.risk.stats() })).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_redeem(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<RedeemCodeReq>,
+) -> Response {
+    let uname = match resolve_portal_user(&st, &headers).await {
+        Ok(u) => u,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    match st.ledger.redeem_code(&uname, &req.code).await {
+        Ok((credits, wtype)) => Json(json!({ "ok": true, "credits": credits, "wallet_type": wtype })).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_affiliate_transfer(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    let uname = match resolve_portal_user(&st, &headers).await {
+        Ok(u) => u,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    match st.ledger.transfer_affiliate_to_paid(&uname).await {
+        Ok(amt) => Json(json!({ "ok": true, "transferred": amt })).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_admin_list_channels(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(e) = st.verify_admin(&headers) {
+        return st.err_response(&headers, e);
+    }
+    match st.ledger.list_channels().await {
+        Ok(channels) => Json(json!({ "ok": true, "channels": channels })).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_admin_upsert_channel(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<ChannelUpsertReq>,
+) -> Response {
+    if let Err(e) = st.verify_admin(&headers) {
+        return st.err_response(&headers, e);
+    }
+    match st.ledger.upsert_channel(&req).await {
+        Ok(()) => Json(json!({ "ok": true, "channel_id": req.id })).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_admin_delete_channel(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(e) = st.verify_admin(&headers) {
+        return st.err_response(&headers, e);
+    }
+    match st.ledger.delete_channel(&id).await {
+        Ok(()) => Json(json!({ "ok": true, "deleted": id })).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_admin_create_redemptions(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<RedemptionCreateReq>,
+) -> Response {
+    if let Err(e) = st.verify_admin(&headers) {
+        return st.err_response(&headers, e);
+    }
+    match st.ledger.create_redemptions(&req).await {
+        Ok(codes) => Json(json!({ "ok": true, "codes": codes })).into_response(),
         Err(e) => st.err_response(&headers, e),
     }
 }

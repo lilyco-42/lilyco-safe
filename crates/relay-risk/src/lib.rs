@@ -6,10 +6,9 @@ use relay_core::config::{RiskSection, SecuritySection};
 use relay_core::{ClientIp, RelayError};
 use serde::Serialize;
 
-/// Immutable risk policy (4 fields, Rule of 4).
+/// Immutable domain risk policy (<= 4 fields; HTTP RPM rate limiting is delegated to `tower_governor`).
 #[derive(Debug, Clone)]
 pub struct RiskPolicy {
-    pub max_rpm_per_ip: u32,
     pub max_auth_fail_per_ip: u32,
     pub lockout_secs: u64,
     pub max_credits_per_req: u64,
@@ -18,7 +17,6 @@ pub struct RiskPolicy {
 impl From<&RiskSection> for RiskPolicy {
     fn from(r: &RiskSection) -> Self {
         Self {
-            max_rpm_per_ip: r.max_rpm_per_ip.max(1),
             max_auth_fail_per_ip: r.max_auth_fail_per_ip.max(1),
             lockout_secs: r.lockout_secs.max(10),
             max_credits_per_req: r.max_credits_per_req.max(1),
@@ -32,13 +30,12 @@ pub struct RiskStats {
     pub blocked_ips: usize,
     pub locked_ips: usize,
     pub frozen_keys: usize,
-    pub active_ip_windows: usize,
+    pub rate_limiter: &'static str,
 }
 
 #[derive(Default)]
 struct IpTables {
     static_blocked: HashSet<String>,
-    rpm_hits: HashMap<String, VecDeque<u64>>,
     auth_fails: HashMap<String, VecDeque<u64>>,
     locked_until: HashMap<String, u64>,
 }
@@ -49,7 +46,8 @@ struct KeyGuard {
     frozen_until: HashMap<String, u64>,
 }
 
-/// Security-first Risk Control Engine (<= 4 fields, thread-safe, zero unwrap).
+/// Domain Risk Control Engine (HTTP RPM handled by `tower_governor`; this handles anti-spoof,
+/// IP blocklist, brute-force lockout, per-key IP whitelist, and rapid token-drain circuit breaker).
 pub struct RiskEngine {
     policy: RiskPolicy,
     trusted_proxies: HashSet<String>,
@@ -89,7 +87,7 @@ impl RiskEngine {
         }
     }
 
-    /// Zero-trust client IP extraction: ONLY trust X-Forwarded-For when peer is a configured trusted proxy!
+    /// Zero-trust client IP extraction: ONLY trust X-Forwarded-For when peer is a configured trusted proxy.
     pub fn resolve_ip(&self, peer_ip: &str, forwarded_for: Option<&str>) -> Result<ClientIp, RelayError> {
         let peer = peer_ip.trim();
         if self.trusted_proxies.contains(peer)
@@ -102,10 +100,10 @@ impl RiskEngine {
         ClientIp::parse(peer)
     }
 
-    /// Check IP blocklist, active lockout, and 60s sliding-window RPM limit.
+    /// Check IP blocklist & brute-force lockout (RPM is enforced by `tower_governor` middleware).
     pub fn check_ip(&self, ip: &ClientIp) -> Result<(), RelayError> {
         let now = now_unix();
-        let mut guard = self
+        let guard = self
             .ip_tables
             .lock()
             .map_err(|_| RelayError::Storage("risk ip lock poisoned".into()))?;
@@ -116,12 +114,19 @@ impl RiskEngine {
         if guard.locked_until.get(key).is_some_and(|&until| until > now) {
             return Err(RelayError::IpBlocked(format!("ip {key} is temporarily locked")));
         }
-        let hits = guard.rpm_hits.entry(key.to_string()).or_default();
-        prune_older(hits, now.saturating_sub(60));
-        if hits.len() >= self.policy.max_rpm_per_ip as usize {
-            return Err(RelayError::RateLimited(format!("ip {key} exceeded RPM limit")));
+        Ok(())
+    }
+
+    /// Enforce optional per-key IP whitelist (comma-separated IPs).
+    pub fn check_key_ip_whitelist(&self, ip: &ClientIp, allowed_ips: &str) -> Result<(), RelayError> {
+        let trimmed = allowed_ips.trim();
+        if trimmed.is_empty() {
+            return Ok(());
         }
-        hits.push_back(now);
+        let matched = trimmed.split(',').any(|a| a.trim() == ip.as_str());
+        if !matched {
+            return Err(RelayError::IpBlocked(format!("ip {} not in key whitelist", ip.as_str())));
+        }
         Ok(())
     }
 
@@ -192,14 +197,14 @@ impl RiskEngine {
 
     pub fn stats(&self) -> RiskStats {
         let now = now_unix();
-        let (blocked_ips, locked_ips, active_ip_windows) = self
+        let (blocked_ips, locked_ips) = self
             .ip_tables
             .lock()
             .map(|g| {
                 let locked = g.locked_until.values().filter(|&&u| u > now).count();
-                (g.static_blocked.len(), locked, g.rpm_hits.len())
+                (g.static_blocked.len(), locked)
             })
-            .unwrap_or((0, 0, 0));
+            .unwrap_or((0, 0));
         let frozen_keys = self
             .key_guard
             .lock()
@@ -209,7 +214,7 @@ impl RiskEngine {
             blocked_ips,
             locked_ips,
             frozen_keys,
-            active_ip_windows,
+            rate_limiter: "tower_governor(gcra)",
         }
     }
 }
@@ -220,7 +225,7 @@ mod tests {
 
     fn test_engine() -> RiskEngine {
         let risk = RiskSection {
-            max_rpm_per_ip: 3,
+            max_rpm_per_ip: 60,
             max_auth_fail_per_ip: 2,
             lockout_secs: 600,
             max_credits_per_req: 100,
@@ -244,16 +249,14 @@ mod tests {
     }
 
     #[test]
-    fn ip_blocklist_rpm_and_auth_lockout_enforce_security() {
+    fn ip_blocklist_whitelist_and_auth_lockout_enforce_security() {
         let eng = test_engine();
         let bad = ClientIp::parse("198.51.100.9").unwrap();
         assert!(matches!(eng.check_ip(&bad), Err(RelayError::IpBlocked(_))));
 
-        let user = ClientIp::parse("203.0.113.10").unwrap();
-        assert!(eng.check_ip(&user).is_ok());
-        assert!(eng.check_ip(&user).is_ok());
-        assert!(eng.check_ip(&user).is_ok());
-        assert!(matches!(eng.check_ip(&user), Err(RelayError::RateLimited(_))));
+        let ok_ip = ClientIp::parse("203.0.113.10").unwrap();
+        assert!(eng.check_key_ip_whitelist(&ok_ip, "203.0.113.10,10.0.0.1").is_ok());
+        assert!(eng.check_key_ip_whitelist(&ok_ip, "10.0.0.1").is_err());
 
         let brute = ClientIp::parse("203.0.113.77").unwrap();
         assert!(!eng.record_auth_failure(&brute));

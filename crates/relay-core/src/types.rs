@@ -93,7 +93,7 @@ impl AnthropicMsgReq {
     }
 }
 
-/// Sub-key issuance request (4 fields, deny_unknown_fields).
+/// Sub-key issuance request (<= 4 top-level fields, deny_unknown_fields).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KeyIssueReq {
@@ -101,7 +101,98 @@ pub struct KeyIssueReq {
     pub quota_limit: u64,
     pub rpm_limit: u32,
     #[serde(default)]
+    pub scope: KeyScope,
+}
+
+/// Optional key restrictions (<= 4 fields, Rule of 4).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeyScope {
+    #[serde(default)]
     pub allowed_models: Vec<String>,
+    #[serde(default)]
+    pub allowed_ips: String,
+    #[serde(default)]
+    pub expired_unix: i64,
+    #[serde(default)]
+    pub group_name: String,
+}
+
+/// Strictly typed OpenAI `/v1/embeddings` request (<= 4 fields, deny_unknown_fields).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmbeddingReq {
+    pub model: String,
+    pub input: Vec<String>,
+    #[serde(default)]
+    pub encoding_format: Option<String>,
+}
+
+/// Strictly typed OpenAI `/v1/images/generations` request (<= 4 fields, deny_unknown_fields).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageGenReq {
+    pub model: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub size: Option<String>,
+    #[serde(default)]
+    pub n: Option<u8>,
+}
+
+/// Strictly typed `/v1/rerank` request (<= 4 fields, deny_unknown_fields).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RerankReq {
+    pub model: String,
+    pub query: String,
+    pub documents: Vec<String>,
+    #[serde(default)]
+    pub top_n: Option<u32>,
+}
+
+/// Admin dynamic channel upsert payload (<= 4 composed fields, deny_unknown_fields).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelUpsertReq {
+    pub id: String,
+    pub provider: String,
+    pub endpoint: ChannelEndpoint,
+    pub routing: ChannelRouting,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelEndpoint {
+    pub name: String,
+    pub base_url: String,
+    pub api_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelRouting {
+    pub models: Vec<String>,
+    pub priority: i32,
+    pub weight: u32,
+    pub enabled: bool,
+}
+
+/// Admin batch redemption code creation (<= 4 fields, deny_unknown_fields).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RedemptionCreateReq {
+    pub count: u32,
+    pub credits: u64,
+    pub wallet_type: String, // "paid" | "bonus"
+    pub prefix: String,
+}
+
+/// User redeem code request (<= 4 fields, deny_unknown_fields).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RedeemCodeReq {
+    pub code: String,
 }
 
 impl KeyIssueReq {

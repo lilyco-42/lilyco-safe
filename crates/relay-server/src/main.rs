@@ -5,32 +5,55 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 use relay_core::{GatewayConfig, I18nBundle, ModelsCatalog, RelayError};
 use relay_engine::{RelayLedger, UpstreamRouter};
 use relay_risk::RiskEngine;
 use state::{AppState, RuntimeBundle};
+use tower_governor::governor::GovernorConfigBuilder;
+use tower_governor::GovernorLayer;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
 pub fn build_app(state: AppState) -> Router {
     let web_dir = std::env::var("RELAY_WEB_DIR").unwrap_or_else(|_| "./web_dist".into());
+    let rpm = state.runtime.cfg.risk.max_rpm_per_ip.max(1);
+    let burst = (rpm / 2).max(5);
+    let gov_cfg = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second((rpm / 60).max(1) as u64)
+            .burst_size(burst)
+            .finish()
+            .expect("valid governor config"),
+    );
+
     Router::new()
         .route("/api/v1/health", get(handlers::api_health))
         .route("/api/v1/me", get(handlers::api_me))
+        .route("/api/v1/dashboard/stats", get(handlers::api_dashboard_stats))
         .route("/v1/models", get(handlers::api_list_models))
+        .route("/v1/models/{model}", get(handlers::api_get_model))
         .route("/v1/chat/completions", post(handlers::api_openai_chat))
         .route("/v1/messages", post(handlers::api_anthropic_messages))
+        .route("/v1/embeddings", post(handlers::api_embeddings))
+        .route("/v1/images/generations", post(handlers::api_images))
+        .route("/v1/rerank", post(handlers::api_rerank))
         .route("/api/v1/keys", post(handlers::api_issue_key))
         .route("/api/v1/keys/revoke", post(handlers::api_revoke_key))
+        .route("/api/v1/redeem", post(handlers::api_redeem))
         .route("/api/v1/affiliate/bind", post(handlers::api_bind_affiliate))
+        .route("/api/v1/affiliate/transfer", post(handlers::api_affiliate_transfer))
+        .route("/api/v1/admin/channels", get(handlers::api_admin_list_channels).post(handlers::api_admin_upsert_channel))
+        .route("/api/v1/admin/channels/{id}", delete(handlers::api_admin_delete_channel))
+        .route("/api/v1/admin/redemptions", post(handlers::api_admin_create_redemptions))
         .route("/api/v1/admin/risk/block_ip", post(handlers::api_admin_block_ip))
         .route("/api/v1/admin/risk/unblock_ip", post(handlers::api_admin_unblock_ip))
         .route("/api/v1/admin/topup", post(handlers::api_admin_topup))
         .route("/mcp", post(handlers::api_mcp))
         .fallback_service(ServeDir::new(web_dir))
+        .layer(GovernorLayer::new(gov_cfg))
         .layer(CompressionLayer::new())
         .layer(CorsLayer::permissive())
         .with_state(state)
@@ -75,7 +98,7 @@ mod tests {
     use relay_core::config::{
         ChannelConfig, ModelConfig, RiskSection, SecuritySection, ServerSection, StorageSection,
     };
-    use relay_core::KeyIssueReq;
+    use relay_core::{KeyIssueReq, KeyScope};
 
     async fn spawn_mock_upstream() -> String {
         let mock = Router::new().route(
@@ -155,7 +178,12 @@ mod tests {
                     name: "prod".into(),
                     quota_limit: 100,
                     rpm_limit: 60,
-                    allowed_models: vec!["gemini-2.5-flash".into()],
+                    scope: KeyScope {
+                        allowed_models: vec!["gemini-2.5-flash".into()],
+                        allowed_ips: String::new(),
+                        expired_unix: 0,
+                        group_name: "default".into(),
+                    },
                 },
             )
             .await

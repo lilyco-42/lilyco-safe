@@ -6,6 +6,8 @@ use relay_core::{ChannelConfig, ChatReq, ModelConfig, ModelsCatalog, RelayError,
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
+use crate::ledger::LiveChannel;
+
 /// Sanitized upstream completion reply (4 fields, Rule of 4).
 #[derive(Debug, Clone, Serialize)]
 pub struct UpstreamReply {
@@ -81,6 +83,37 @@ impl UpstreamRouter {
     fn trip_cooldown(&self, channel_id: &str, secs: u64) {
         if let Ok(mut m) = self.cooldowns.lock() {
             m.insert(channel_id.to_string(), now_unix() + secs);
+        }
+    }
+
+    /// Try all DB-backed pool channels first (automatic failover on 429/5xx), then fall back to TOML env channel.
+    pub async fn call_chat_with_pool(
+        &self,
+        model: &ModelConfig,
+        req: &ChatReq,
+        pool: &[LiveChannel],
+    ) -> Result<UpstreamReply, RelayError> {
+        let mut last_err: Option<RelayError> = None;
+        for lc in pool {
+            if self.is_cooled(&lc.id) {
+                continue;
+            }
+            let ch = ChannelConfig {
+                id: lc.id.clone(),
+                provider: lc.provider.clone(),
+                base_url: lc.base_url.clone(),
+                api_key_env: String::new(),
+                weight: 100,
+                enabled: true,
+            };
+            match self.send_openai_compat(&ch, model, req, &lc.api_key).await {
+                Ok(reply) => return Ok(reply),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        match self.call_chat(model, req).await {
+            Ok(r) => Ok(r),
+            Err(e) => Err(last_err.unwrap_or(e)),
         }
     }
 
@@ -175,5 +208,56 @@ impl UpstreamRouter {
             content,
             usage,
         })
+    }
+
+    /// Forward typed OpenAI-compatible endpoints (`/embeddings`, `/images/generations`, `/rerank`, `/responses`).
+    pub async fn forward_json_endpoint<T: Serialize>(
+        &self,
+        model: &ModelConfig,
+        path_suffix: &str,
+        body: &T,
+    ) -> Result<serde_json::Value, RelayError> {
+        let ch = self
+            .catalog
+            .find_channel(&model.channel_id)
+            .ok_or_else(|| RelayError::ModelNotFound(format!("channel {} disabled", model.channel_id)))?;
+        if self.is_cooled(&ch.id) {
+            return Err(RelayError::UpstreamFailed(format!("channel {} cooling down", ch.id)));
+        }
+        let api_key = std::env::var(&ch.api_key_env)
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| RelayError::UpstreamFailed(format!("upstream env {} not set", ch.api_key_env)))?;
+        let url = format!("{}/{}", ch.base_url.trim_end_matches('/'), path_suffix.trim_start_matches('/'));
+        let resp = self
+            .client
+            .post(&url)
+            .bearer_auth(&api_key)
+            .json(body)
+            .send()
+            .await
+            .map_err(|_| {
+                self.trip_cooldown(&ch.id, 30);
+                RelayError::UpstreamFailed(format!("upstream {} timeout", ch.id))
+            })?;
+        if !resp.status().is_success() {
+            return Err(RelayError::UpstreamFailed(format!("upstream {} HTTP {}", ch.id, resp.status().as_u16())));
+        }
+        resp.json::<serde_json::Value>()
+            .await
+            .map_err(|_| RelayError::UpstreamFailed("invalid upstream json".into()))
+    }
+
+    /// Measure upstream channel connectivity latency in milliseconds.
+    pub async fn probe_url(&self, base_url: &str) -> Result<u64, RelayError> {
+        let start = std::time::Instant::now();
+        let url = format!("{}/models", base_url.trim_end_matches('/'));
+        let _ = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| RelayError::UpstreamFailed(format!("probe failed: {e}")))?;
+        Ok(start.elapsed().as_millis() as u64)
     }
 }

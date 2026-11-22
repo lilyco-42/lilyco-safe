@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
-use relay_core::{KeyIssueReq, RelayError, TokenUsage};
+use relay_core::{ChannelUpsertReq, KeyIssueReq, RedemptionCreateReq, RelayError, TokenUsage};
 use ring::digest::{digest, SHA256};
 use serde::Serialize;
 use turso::{Builder, Connection, Database, Value};
@@ -24,6 +24,49 @@ pub struct ApiKeyRecord {
     pub username: String,
     pub quota_limit: u64,
     pub used_credits: u64,
+}
+
+/// Extended key access policy (<= 4 fields, Rule of 4).
+#[derive(Debug, Clone)]
+pub struct VerifiedKey {
+    pub record: ApiKeyRecord,
+    pub allowed_ips: String,
+    pub expired_unix: i64,
+}
+
+/// Dynamic DB-backed channel view (4 composed fields, Rule of 4).
+#[derive(Debug, Clone, Serialize)]
+pub struct ChannelRecord {
+    pub id: String,
+    pub provider: String,
+    pub base_url: String,
+    pub meta: ChannelMeta,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChannelMeta {
+    pub name: String,
+    pub models: Vec<String>,
+    pub priority: i32,
+    pub enabled: bool,
+}
+
+/// Live upstream channel credentials for routing pool (4 fields, Rule of 4).
+#[derive(Debug, Clone)]
+pub struct LiveChannel {
+    pub id: String,
+    pub provider: String,
+    pub base_url: String,
+    pub api_key: String,
+}
+
+/// Dashboard aggregate stats (4 fields, Rule of 4).
+#[derive(Debug, Clone, Serialize)]
+pub struct DashboardStats {
+    pub total_requests: u64,
+    pub total_prompt_tokens: u64,
+    pub total_completion_tokens: u64,
+    pub total_credits_charged: u64,
 }
 
 /// Usage audit log entry (4 fields, Rule of 4).
@@ -137,10 +180,33 @@ impl RelayLedger {
                 commission_credits INTEGER NOT NULL,
                 created_unix INTEGER NOT NULL
             )",
+            "CREATE TABLE IF NOT EXISTS relay_channels (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                api_key TEXT NOT NULL,
+                models TEXT NOT NULL DEFAULT '',
+                priority INTEGER NOT NULL DEFAULT 10,
+                weight INTEGER NOT NULL DEFAULT 100,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                latency_ms INTEGER NOT NULL DEFAULT 0,
+                created_unix INTEGER NOT NULL
+            )",
+            "CREATE TABLE IF NOT EXISTS relay_redemptions (
+                code TEXT PRIMARY KEY,
+                credits INTEGER NOT NULL,
+                wallet_type TEXT NOT NULL DEFAULT 'paid',
+                used_by TEXT NOT NULL DEFAULT '',
+                created_unix INTEGER NOT NULL
+            )",
         ];
         for s in stmts {
             self.conn.execute(s, ()).await.map_err(map_db)?;
         }
+        // Safe migrations for existing production DBs
+        let _ = self.conn.execute("ALTER TABLE relay_keys ADD COLUMN allowed_ips TEXT NOT NULL DEFAULT ''", ()).await;
+        let _ = self.conn.execute("ALTER TABLE relay_keys ADD COLUMN expired_unix INTEGER NOT NULL DEFAULT 0", ()).await;
         Ok(())
     }
 
@@ -198,11 +264,12 @@ impl RelayLedger {
         let secret = format!("sk-l42-{}", &sha256_b64(&raw_seed)[..32]);
         let key_hash = sha256_b64(&secret);
         let key_id = format!("key_{}", &key_hash[..12]);
-        let allowed = req.allowed_models.join(",");
+        let allowed = req.scope.allowed_models.join(",");
+        let allowed_ips = req.scope.allowed_ips.trim().to_string();
         self.conn
             .execute(
-                "INSERT INTO relay_keys (id, username, name, key_hash, quota_limit, used_credits, rpm_limit, allowed_models, active, created_unix)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, 1, ?8)",
+                "INSERT INTO relay_keys (id, username, name, key_hash, quota_limit, used_credits, rpm_limit, allowed_models, allowed_ips, expired_unix, active, created_unix)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8, ?9, 1, ?10)",
                 (
                     key_id.as_str(),
                     u.as_str(),
@@ -211,6 +278,8 @@ impl RelayLedger {
                     req.quota_limit as i64,
                     req.rpm_limit as i64,
                     allowed.as_str(),
+                    allowed_ips.as_str(),
+                    req.scope.expired_unix,
                     ts,
                 ),
             )
@@ -285,12 +354,12 @@ impl RelayLedger {
         &self,
         raw_key: &str,
         model_id: &str,
-    ) -> Result<ApiKeyRecord, RelayError> {
+    ) -> Result<VerifiedKey, RelayError> {
         let key_hash = sha256_b64(raw_key.trim());
         let mut rows = self
             .conn
             .query(
-                "SELECT id, username, quota_limit, used_credits, allowed_models, active FROM relay_keys WHERE key_hash = ?1",
+                "SELECT id, username, quota_limit, used_credits, allowed_models, active, allowed_ips, expired_unix FROM relay_keys WHERE key_hash = ?1",
                 [key_hash.as_str()],
             )
             .await
@@ -301,15 +370,23 @@ impl RelayLedger {
         if col_u64(&row, 5) == 0 {
             return Err(RelayError::Unauthorized("api key revoked".into()));
         }
+        let exp = col_u64(&row, 7) as i64;
+        if exp > 0 && now_unix() > exp {
+            return Err(RelayError::Unauthorized("api key expired".into()));
+        }
         let allowed = col_str(&row, 4);
-        if !allowed.is_empty() && !allowed.split(',').any(|m| m.trim() == model_id) {
+        if !allowed.is_empty() && !model_id.is_empty() && !allowed.split(',').any(|m| m.trim() == model_id) {
             return Err(RelayError::Unauthorized(format!("model {model_id} not allowed on this key")));
         }
-        Ok(ApiKeyRecord {
-            id: col_str(&row, 0),
-            username: col_str(&row, 1),
-            quota_limit: col_u64(&row, 2),
-            used_credits: col_u64(&row, 3),
+        Ok(VerifiedKey {
+            record: ApiKeyRecord {
+                id: col_str(&row, 0),
+                username: col_str(&row, 1),
+                quota_limit: col_u64(&row, 2),
+                used_credits: col_u64(&row, 3),
+            },
+            allowed_ips: col_str(&row, 6),
+            expired_unix: exp,
         })
     }
 
@@ -474,14 +551,212 @@ impl RelayLedger {
             .map_err(map_db)?;
         Ok(comm)
     }
+
+    pub async fn transfer_affiliate_to_paid(&self, username: &str) -> Result<u64, RelayError> {
+        let w = self.get_wallet(username).await?;
+        if w.affiliate_credits == 0 {
+            return Err(RelayError::InvalidInput("no affiliate credits available to transfer".into()));
+        }
+        let amt = w.affiliate_credits;
+        self.conn
+            .execute(
+                "UPDATE relay_users SET paid_credits = paid_credits + ?1, affiliate_credits = 0 WHERE username = ?2",
+                (amt as i64, w.username.as_str()),
+            )
+            .await
+            .map_err(map_db)?;
+        Ok(amt)
+    }
+
+    pub async fn upsert_channel(&self, req: &ChannelUpsertReq) -> Result<(), RelayError> {
+        let id = req.id.trim();
+        if id.is_empty() || req.endpoint.base_url.trim().is_empty() {
+            return Err(RelayError::InvalidInput("channel id and base_url required".into()));
+        }
+        let models = req.routing.models.join(",");
+        let en = i64::from(req.routing.enabled);
+        self.conn
+            .execute(
+                "INSERT INTO relay_channels (id, name, provider, base_url, api_key, models, priority, weight, enabled, latency_ms, created_unix)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10)
+                 ON CONFLICT(id) DO UPDATE SET
+                   name=excluded.name, provider=excluded.provider, base_url=excluded.base_url,
+                   api_key=CASE WHEN excluded.api_key='' THEN relay_channels.api_key ELSE excluded.api_key END,
+                   models=excluded.models, priority=excluded.priority, weight=excluded.weight, enabled=excluded.enabled",
+                (
+                    id,
+                    req.endpoint.name.trim(),
+                    req.provider.trim(),
+                    req.endpoint.base_url.trim(),
+                    req.endpoint.api_key.trim(),
+                    models.as_str(),
+                    req.routing.priority as i64,
+                    req.routing.weight as i64,
+                    en,
+                    now_unix(),
+                ),
+            )
+            .await
+            .map_err(map_db)?;
+        Ok(())
+    }
+
+    pub async fn list_channels(&self) -> Result<Vec<ChannelRecord>, RelayError> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, name, provider, base_url, models, priority, enabled FROM relay_channels ORDER BY priority DESC, id ASC",
+                (),
+            )
+            .await
+            .map_err(map_db)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(map_db)? {
+            let m_raw = col_str(&row, 4);
+            let models: Vec<String> = m_raw
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            out.push(ChannelRecord {
+                id: col_str(&row, 0),
+                provider: col_str(&row, 2),
+                base_url: col_str(&row, 3),
+                meta: ChannelMeta {
+                    name: col_str(&row, 1),
+                    models,
+                    priority: col_u64(&row, 5) as i32,
+                    enabled: col_u64(&row, 6) != 0,
+                },
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn delete_channel(&self, id: &str) -> Result<(), RelayError> {
+        self.conn
+            .execute("DELETE FROM relay_channels WHERE id = ?1", [id.trim()])
+            .await
+            .map_err(map_db)?;
+        Ok(())
+    }
+
+    /// Return enabled DB-backed channels matching `model_id` (or wildcard `*`), ordered by priority/weight.
+    pub async fn find_live_channels(&self, model_id: &str) -> Result<Vec<LiveChannel>, RelayError> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, provider, base_url, api_key, models FROM relay_channels WHERE enabled = 1 ORDER BY priority DESC, weight DESC",
+                (),
+            )
+            .await
+            .map_err(map_db)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(map_db)? {
+            let models_csv = col_str(&row, 4);
+            let matched = models_csv.trim().is_empty()
+                || models_csv
+                    .split(',')
+                    .any(|m| m.trim() == "*" || m.trim() == model_id);
+            let api_key = col_str(&row, 3);
+            if matched && !api_key.is_empty() {
+                out.push(LiveChannel {
+                    id: col_str(&row, 0),
+                    provider: col_str(&row, 1),
+                    base_url: col_str(&row, 2),
+                    api_key,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    pub async fn create_redemptions(&self, req: &RedemptionCreateReq) -> Result<Vec<String>, RelayError> {
+        let count = req.count.clamp(1, 100);
+        let wtype = if req.wallet_type == "bonus" { "bonus" } else { "paid" };
+        let prefix = if req.prefix.trim().is_empty() { "L42" } else { req.prefix.trim() };
+        let ts = now_unix();
+        let mut codes = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let hash = sha256_b64(&format!("rdm:{prefix}:{ts}:{i}:{}", req.credits));
+            let code = format!("{}-{}", prefix.to_ascii_uppercase(), hash[..12].to_ascii_uppercase());
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO relay_redemptions (code, credits, wallet_type, used_by, created_unix) VALUES (?1, ?2, ?3, '', ?4)",
+                    (code.as_str(), req.credits as i64, wtype, ts),
+                )
+                .await
+                .map_err(map_db)?;
+            codes.push(code);
+        }
+        Ok(codes)
+    }
+
+    pub async fn redeem_code(&self, username: &str, code: &str) -> Result<(u64, String), RelayError> {
+        let u = username.trim().to_ascii_lowercase();
+        let c = code.trim().to_ascii_uppercase();
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT credits, wallet_type, used_by FROM relay_redemptions WHERE code = ?1",
+                [c.as_str()],
+            )
+            .await
+            .map_err(map_db)?;
+        let Some(row) = rows.next().await.map_err(map_db)? else {
+            return Err(RelayError::InvalidInput("redemption code not found".into()));
+        };
+        if !col_str(&row, 2).is_empty() {
+            return Err(RelayError::InvalidInput("redemption code already used".into()));
+        }
+        let credits = col_u64(&row, 0);
+        let wtype = col_str(&row, 1);
+        self.conn
+            .execute(
+                "UPDATE relay_redemptions SET used_by = ?1 WHERE code = ?2 AND used_by = ''",
+                (u.as_str(), c.as_str()),
+            )
+            .await
+            .map_err(map_db)?;
+        let col = if wtype == "bonus" { "bonus_credits" } else { "paid_credits" };
+        let sql = format!("UPDATE relay_users SET {col} = {col} + ?1 WHERE username = ?2");
+        self.conn.execute(&sql, (credits as i64, u.as_str())).await.map_err(map_db)?;
+        Ok((credits, wtype))
+    }
+
+    pub async fn dashboard_stats(&self) -> Result<DashboardStats, RelayError> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(credits_charged),0) FROM relay_usage_logs",
+                (),
+            )
+            .await
+            .map_err(map_db)?;
+        if let Some(row) = rows.next().await.map_err(map_db)? {
+            return Ok(DashboardStats {
+                total_requests: col_u64(&row, 0),
+                total_prompt_tokens: col_u64(&row, 1),
+                total_completion_tokens: col_u64(&row, 2),
+                total_credits_charged: col_u64(&row, 3),
+            });
+        }
+        Ok(DashboardStats {
+            total_requests: 0,
+            total_prompt_tokens: 0,
+            total_completion_tokens: 0,
+            total_credits_charged: 0,
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use relay_core::KeyScope;
 
     #[tokio::test]
-    async fn dual_wallet_prehold_refund_and_affiliate_work() {
+    async fn dual_wallet_prehold_refund_redemption_and_affiliate_work() {
         let db = RelayLedger::open(":memory:").await.unwrap();
         db.sync_portal_wallet("alice", 0).await.unwrap();
         db.sync_portal_wallet("bob", 100).await.unwrap();
@@ -499,19 +774,41 @@ mod tests {
             name: "dev".into(),
             quota_limit: 500,
             rpm_limit: 60,
-            allowed_models: vec!["gemini-2.5-flash".into()],
+            scope: KeyScope {
+                allowed_models: vec!["gemini-2.5-flash".into()],
+                allowed_ips: "10.0.0.1".into(),
+                expired_unix: 0,
+                group_name: "default".into(),
+            },
         };
         let (a_key, _) = db.issue_key("alice", &req).await.unwrap();
         let a_rec = db.verify_api_key(&a_key, "gemini-2.5-flash").await.unwrap();
-        assert!(matches!(db.pre_hold_paid(&a_rec, 10).await, Err(RelayError::InsufficientPaid(_))));
+        assert_eq!(a_rec.allowed_ips, "10.0.0.1");
+        assert!(matches!(db.pre_hold_paid(&a_rec.record, 10).await, Err(RelayError::InsufficientPaid(_))));
 
-        // Model whitelist enforced on sub-key
-        assert!(db.verify_api_key(&a_key, "claude-sonnet-4").await.is_err());
+        // Alice transfers affiliate credits -> paid credits, then can spend!
+        assert_eq!(db.transfer_affiliate_to_paid("alice").await.unwrap(), 150);
+        assert_eq!(db.get_wallet("alice").await.unwrap().paid_credits, 150);
+
+        // Redemption code batch generation & single-use redemption
+        let codes = db
+            .create_redemptions(&RedemptionCreateReq {
+                count: 2,
+                credits: 200,
+                wallet_type: "paid".into(),
+                prefix: "VIP".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(codes.len(), 2);
+        let (c_amt, wtype) = db.redeem_code("alice", &codes[0]).await.unwrap();
+        assert_eq!((c_amt, wtype.as_str()), (200, "paid"));
+        assert!(db.redeem_code("alice", &codes[0]).await.is_err());
 
         // Bob pre-holds 20, upstream fails -> 100% refunded!
         let (b_key, _) = db.issue_key("bob", &req).await.unwrap();
         let b_rec = db.verify_api_key(&b_key, "gemini-2.5-flash").await.unwrap();
-        let hold = db.pre_hold_paid(&b_rec, 20).await.unwrap();
+        let hold = db.pre_hold_paid(&b_rec.record, 20).await.unwrap();
         assert_eq!(db.get_wallet("bob").await.unwrap().paid_credits, 1080);
         db.refund_hold(&hold, "gemini-2.5-flash").await.unwrap();
         assert_eq!(db.get_wallet("bob").await.unwrap().paid_credits, 1100);

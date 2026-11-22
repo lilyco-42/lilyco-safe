@@ -12,7 +12,7 @@ export interface RiskStats {
   blocked_ips: number;
   locked_ips: number;
   frozen_keys: number;
-  active_ip_windows: number;
+  rate_limiter: string;
 }
 
 export interface HealthResp {
@@ -35,11 +35,25 @@ export interface ChatReq {
   max_tokens?: number;
 }
 
+export interface KeyScope {
+  allowed_models: string[];
+  allowed_ips: string;
+  expired_unix: number;
+  group_name: string;
+}
+
 export interface KeyIssueReq {
   name: string;
   quota_limit: number;
   rpm_limit: number;
-  allowed_models: string[];
+  scope: KeyScope;
+}
+
+export interface ChannelUpsertReq {
+  id: string;
+  provider: string;
+  endpoint: { name: string; base_url: string; api_key: string };
+  routing: { models: string[]; priority: number; weight: number; enabled: boolean };
 }
 
 export interface KeyIssueResp {
@@ -128,6 +142,74 @@ export async function revokeSubKey(portalToken: string, keyId: string): Promise<
     body: JSON.stringify({ key_id: keyId }),
   });
   await parseJsonOrThrow<{ ok: boolean }>(r);
+}
+
+export async function redeemCode(portalToken: string, code: string): Promise<{ credits: number; wallet_type: string }> {
+  const r = await fetch(`${API_BASE}/api/v1/redeem`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${portalToken.trim()}` },
+    body: JSON.stringify({ code: code.trim() }),
+  });
+  return parseJsonOrThrow<{ credits: number; wallet_type: string }>(r);
+}
+
+export async function upsertChannel(adminKey: string, req: ChannelUpsertReq): Promise<void> {
+  const r = await fetch(`${API_BASE}/api/v1/admin/channels`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Admin-Key": adminKey.trim() },
+    body: JSON.stringify(req),
+  });
+  await parseJsonOrThrow<{ ok: boolean }>(r);
+}
+
+export interface ChannelItem {
+  id: string;
+  provider: string;
+  base_url: string;
+  meta: { name: string; models: string[]; priority: number; enabled: boolean };
+}
+
+export async function portalAuth(
+  mode: "login" | "register",
+  username: string,
+  password: string,
+): Promise<{ token: string; username: string }> {
+  const path = mode === "register" ? "/studio/api/register" : "/studio/api/login";
+  const body =
+    mode === "register"
+      ? { username, password, email: `${username}@lain42.top` }
+      : { username, password };
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJsonOrThrow<{ token: string; username: string }>(r);
+}
+
+export async function listChannels(adminKey: string): Promise<ChannelItem[]> {
+  const r = await fetch(`${API_BASE}/api/v1/admin/channels`, {
+    headers: { "X-Admin-Key": adminKey.trim() },
+  });
+  const d = await parseJsonOrThrow<{ channels: ChannelItem[] }>(r);
+  return d.channels;
+}
+
+export async function deleteChannel(adminKey: string, id: string): Promise<void> {
+  const r = await fetch(`${API_BASE}/api/v1/admin/channels/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: { "X-Admin-Key": adminKey.trim() },
+  });
+  await parseJsonOrThrow<{ ok: boolean }>(r);
+}
+
+export async function transferAffiliate(portalToken: string): Promise<number> {
+  const r = await fetch(`${API_BASE}/api/v1/affiliate/transfer`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${portalToken.trim()}` },
+  });
+  const d = await parseJsonOrThrow<{ transferred: number }>(r);
+  return d.transferred;
 }
 
 export async function toggleBlockIp(

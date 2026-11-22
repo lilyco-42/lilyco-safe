@@ -1,5 +1,8 @@
 pub mod ledger;
 pub mod upstream;
 
-pub use ledger::{ApiKeyRecord, HoldReceipt, RelayLedger, UsageEntry, UserWallet};
+pub use ledger::{
+    ApiKeyRecord, ChannelMeta, ChannelRecord, DashboardStats, HoldReceipt, LiveChannel,
+    RelayLedger, UsageEntry, UserWallet, VerifiedKey,
+};
 pub use upstream::{UpstreamReply, UpstreamRouter};
