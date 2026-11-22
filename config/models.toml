@@ -177,7 +177,7 @@ allow_free = false
 [[models]]
 id = "claude-sonnet-4"
 channel_id = "openrouter-main"
-upstream_model = "anthropic/claude-sonnet-4"
+upstream_model = "anthropic/claude-sonnet-5.5"
 input_per_m = 65
 output_per_m = 220
 allow_free = false
