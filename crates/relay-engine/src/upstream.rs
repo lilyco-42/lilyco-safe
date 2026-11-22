@@ -58,9 +58,16 @@ fn now_unix() -> u64 {
 
 impl UpstreamRouter {
     pub fn new(catalog: ModelsCatalog) -> Result<Self, RelayError> {
-        let client = Client::builder()
+        let mut builder = Client::builder()
             .connect_timeout(Duration::from_secs(8))
-            .timeout(Duration::from_secs(90))
+            .timeout(Duration::from_secs(90));
+        if let Ok(proxy_url) = std::env::var("UPSTREAM_PROXY")
+            && !proxy_url.trim().is_empty()
+            && let Ok(proxy) = reqwest::Proxy::all(proxy_url.trim())
+        {
+            builder = builder.proxy(proxy);
+        }
+        let client = builder
             .build()
             .map_err(|e| RelayError::Config(format!("http client init: {e}")))?;
         Ok(Self {
@@ -68,6 +75,30 @@ impl UpstreamRouter {
             catalog,
             cooldowns: DashMap::new(),
         })
+    }
+
+    fn resolve_upstream_model(ch: &ChannelConfig, model: &ModelConfig) -> String {
+        let m = model.upstream_model.as_str();
+        if ch.provider == "openrouter" && !m.contains('/') {
+            if m.starts_with("gemini-") || m.starts_with("gemma-") {
+                return format!("google/{m}");
+            }
+            if m.starts_with("claude-") {
+                return format!("anthropic/{m}");
+            }
+            if m.starts_with("gpt-") {
+                return format!("openai/{m}");
+            }
+            if m.starts_with("deepseek-") {
+                return format!("deepseek/{m}");
+            }
+        }
+        if ch.provider == "gemini_openai"
+            && let Some(stripped) = m.strip_prefix("google/")
+        {
+            return stripped.to_string();
+        }
+        m.to_string()
     }
 
     pub fn catalog(&self) -> &ModelsCatalog {
@@ -235,8 +266,9 @@ impl UpstreamRouter {
         api_key: &str,
     ) -> Result<reqwest::Response, RelayError> {
         let url = format!("{}/chat/completions", ch.base_url.trim_end_matches('/'));
+        let upstream_model = Self::resolve_upstream_model(ch, model);
         let mut body = serde_json::json!({
-            "model": model.upstream_model,
+            "model": upstream_model,
             "messages": req.messages,
             "stream": true,
             "stream_options": { "include_usage": true }
@@ -295,7 +327,7 @@ impl UpstreamRouter {
     ) -> Result<UpstreamReply, RelayError> {
         let url = format!("{}/chat/completions", ch.base_url.trim_end_matches('/'));
         let payload = ChatReq {
-            model: model.upstream_model.clone(),
+            model: Self::resolve_upstream_model(ch, model),
             messages: req.messages.clone(),
             stream: false,
             max_tokens: req.max_tokens,

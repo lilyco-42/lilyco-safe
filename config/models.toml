@@ -1,4 +1,4 @@
-# Multi-upstream AI model routing & pricing (1 CNY = 10 real paid credits)
+# Multi-upstream AI model routing & pricing (1 CNY = 10 credits)
 
 [[channels]]
 id = "gemini-aistudio"
@@ -23,6 +23,8 @@ base_url = "https://api.lain42.top/v1"
 api_key_env = "DEEPSEEK_API_KEY"
 weight = 85
 enabled = true
+
+# === 国内极速直连（DeepSeek / Kimi / GLM / 免费） ===
 
 [[models]]
 id = "deepseek-v4.1-flash"
@@ -57,6 +59,14 @@ output_per_m = 80
 allow_free = false
 
 [[models]]
+id = "deepseek-v3.2"
+channel_id = "openrouter-main"
+upstream_model = "deepseek/deepseek-v3.2"
+input_per_m = 20
+output_per_m = 80
+allow_free = false
+
+[[models]]
 id = "deepseek-v3"
 channel_id = "deepseek-official"
 upstream_model = "deepseek-v4.1-flash"
@@ -72,12 +82,30 @@ input_per_m = 0
 output_per_m = 0
 allow_free = true
 
+# === Google AI Studio / Gemini & Gemma 全系列（支持 AI Studio + OpenRouter 自动容灾） ===
+
 [[models]]
-id = "gemini-2.5-flash"
+id = "gemini-3.8-flash"
 channel_id = "gemini-aistudio"
-upstream_model = "gemini-2.5-flash"
+upstream_model = "gemini-3.8-flash"
+input_per_m = 12
+output_per_m = 48
+allow_free = false
+
+[[models]]
+id = "gemini-3.7-flash"
+channel_id = "gemini-aistudio"
+upstream_model = "gemini-3.7-flash"
 input_per_m = 10
 output_per_m = 40
+allow_free = false
+
+[[models]]
+id = "gemini-omni-1.2-flash"
+channel_id = "gemini-aistudio"
+upstream_model = "gemini-omni-1.2-flash"
+input_per_m = 15
+output_per_m = 60
 allow_free = false
 
 [[models]]
@@ -89,11 +117,87 @@ output_per_m = 140
 allow_free = false
 
 [[models]]
+id = "gemini-2.5-flash"
+channel_id = "gemini-aistudio"
+upstream_model = "gemini-2.5-flash"
+input_per_m = 10
+output_per_m = 40
+allow_free = false
+
+[[models]]
+id = "gemini-2.5-flash-lite"
+channel_id = "gemini-aistudio"
+upstream_model = "gemini-2.5-flash-lite"
+input_per_m = 5
+output_per_m = 20
+allow_free = false
+
+[[models]]
+id = "free:gemma-4-31b"
+channel_id = "openrouter-main"
+upstream_model = "google/gemma-4-31b-it:free"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+[[models]]
+id = "free:gemma-4-26b"
+channel_id = "openrouter-main"
+upstream_model = "google/gemma-4-26b-a4b-it:free"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+# === Anthropic Claude 全系列 ===
+
+[[models]]
+id = "claude-opus-5.5"
+channel_id = "openrouter-main"
+upstream_model = "anthropic/claude-opus-5.5"
+input_per_m = 150
+output_per_m = 450
+allow_free = false
+
+[[models]]
+id = "claude-sonnet-5.5"
+channel_id = "openrouter-main"
+upstream_model = "anthropic/claude-sonnet-5.5"
+input_per_m = 75
+output_per_m = 240
+allow_free = false
+
+[[models]]
+id = "claude-haiku-5.5"
+channel_id = "openrouter-main"
+upstream_model = "anthropic/claude-haiku-5.5"
+input_per_m = 20
+output_per_m = 80
+allow_free = false
+
+[[models]]
 id = "claude-sonnet-4"
 channel_id = "openrouter-main"
 upstream_model = "anthropic/claude-sonnet-4"
 input_per_m = 65
 output_per_m = 220
+allow_free = false
+
+# === OpenAI GPT 全系列 ===
+
+[[models]]
+id = "gpt-6.2-astra-pro"
+channel_id = "openrouter-main"
+upstream_model = "openai/gpt-6.2-astra-pro"
+input_per_m = 120
+output_per_m = 360
+allow_free = false
+
+[[models]]
+id = "gpt-6.2-astra"
+channel_id = "openrouter-main"
+upstream_model = "openai/gpt-6.2-astra"
+input_per_m = 50
+output_per_m = 180
 allow_free = false
 
 [[models]]
