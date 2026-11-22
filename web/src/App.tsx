@@ -299,12 +299,14 @@ export function App() {
           )}
           {nav === "chat" && (
             <ChatPanel
+              jwt={jwt}
               models={models}
               selectedModel={selectedModel}
               onSelectModel={setSelectedModel}
               apiKey={activeSecret}
               onApiKeyChange={setActiveSecret}
               onAfterChat={refreshAll}
+              onOpenAuth={() => setAuthModal(true)}
               onToast={showToast}
             />
           )}

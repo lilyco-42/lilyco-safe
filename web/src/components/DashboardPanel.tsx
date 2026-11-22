@@ -158,6 +158,47 @@ export function DashboardPanel({ me, health, stats, onNavigate, onOpenAuth }: Pr
         </div>
       </div>
 
+      {/* 3-Step Quickstart Onboarding Guide */}
+      <div className="card">
+        <div className="card-header">
+          <h3 className="card-title">
+            <Sparkles size={17} color="var(--primary)" /> 30 秒新手上手引导（3 步开箱即用）
+          </h3>
+          <button className="btn btn-sm btn-primary" onClick={() => onNavigate("chat")}>
+            立即体验对话演练场 <ArrowRight size={13} />
+          </button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+          <div style={{ background: "var(--bg-subtle)", border: "1px solid var(--border)", borderRadius: 10, padding: 14 }}>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>第 1 步 · 签发 API 令牌</div>
+            <div style={{ fontSize: 12.5, color: "var(--text-secondary)", marginBottom: 10 }}>
+              点击左侧「令牌管理」创建专属 <span className="mono">sk-l42-...</span> 密钥，系统会自动复制到剪贴板并同步填充至演练场。
+            </div>
+            <button className="btn btn-sm" onClick={() => (authed ? onNavigate("tokens") : onOpenAuth())}>
+              {authed ? "去签发 / 管理 Key" : "先登录账号"}
+            </button>
+          </div>
+          <div style={{ background: "var(--bg-subtle)", border: "1px solid var(--border)", borderRadius: 10, padding: 14 }}>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>第 2 步 · 选择高速模型开聊</div>
+            <div style={{ fontSize: 12.5, color: "var(--text-secondary)", marginBottom: 10 }}>
+              推荐使用国内服务器极速直连模型 <b>deepseek-v4.1-flash</b> / <b>kimi-k3.1-pro</b> / <b>glm-5.3</b>（50ms 级上游响应）。
+            </div>
+            <button className="btn btn-sm btn-primary" onClick={() => onNavigate("chat")}>
+              打开演练场测试
+            </button>
+          </div>
+          <div style={{ background: "var(--bg-subtle)", border: "1px solid var(--border)", borderRadius: 10, padding: 14 }}>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>第 3 步 · 接入 cc-switch / Claude Code</div>
+            <div style={{ fontSize: 12.5, color: "var(--text-secondary)", marginBottom: 10 }}>
+              在「令牌管理」页面底部一键复制 <span className="mono">cc-switch JSON</span>、Claude Code 环境变量或 Cursor Base URL。
+            </div>
+            <button className="btn btn-sm" onClick={() => onNavigate("tokens")}>
+              查看接入配置
+            </button>
+          </div>
+        </div>
+      </div>
+
       {/* 4-Tier RBAC Matrix */}
       <div className="card">
         <div className="card-header">

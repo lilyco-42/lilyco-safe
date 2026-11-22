@@ -25,6 +25,54 @@ weight = 85
 enabled = true
 
 [[models]]
+id = "deepseek-v4.1-flash"
+channel_id = "deepseek-official"
+upstream_model = "deepseek-v4.1-flash"
+input_per_m = 15
+output_per_m = 60
+allow_free = false
+
+[[models]]
+id = "deepseek-v4-pro"
+channel_id = "deepseek-official"
+upstream_model = "deepseek-v4-pro"
+input_per_m = 30
+output_per_m = 120
+allow_free = false
+
+[[models]]
+id = "kimi-k3.1-pro"
+channel_id = "deepseek-official"
+upstream_model = "kimi-k3.1-pro"
+input_per_m = 25
+output_per_m = 100
+allow_free = false
+
+[[models]]
+id = "glm-5.3"
+channel_id = "deepseek-official"
+upstream_model = "glm-5.3"
+input_per_m = 20
+output_per_m = 80
+allow_free = false
+
+[[models]]
+id = "deepseek-v3"
+channel_id = "deepseek-official"
+upstream_model = "deepseek-v4.1-flash"
+input_per_m = 20
+output_per_m = 80
+allow_free = false
+
+[[models]]
+id = "free:nemotron-lightning"
+channel_id = "deepseek-official"
+upstream_model = "nvidia/nemotron-3.5-lightning:free"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+[[models]]
 id = "gemini-2.5-flash"
 channel_id = "gemini-aistudio"
 upstream_model = "gemini-2.5-flash"
@@ -47,54 +95,6 @@ upstream_model = "anthropic/claude-sonnet-4"
 input_per_m = 65
 output_per_m = 220
 allow_free = false
-
-[[models]]
-id = "deepseek-v4.1-flash"
-channel_id = "deepseek-official"
-upstream_model = "deepseek-v4.1-flash"
-input_per_m = 15
-output_per_m = 60
-allow_free = false
-
-[[models]]
-id = "deepseek-v4-pro"
-channel_id = "deepseek-official"
-upstream_model = "deepseek-v4-pro"
-input_per_m = 30
-output_per_m = 120
-allow_free = false
-
-[[models]]
-id = "deepseek-v3"
-channel_id = "deepseek-official"
-upstream_model = "deepseek-v4.1-flash"
-input_per_m = 20
-output_per_m = 80
-allow_free = false
-
-[[models]]
-id = "kimi-k3.1-pro"
-channel_id = "deepseek-official"
-upstream_model = "kimi-k3.1-pro"
-input_per_m = 25
-output_per_m = 100
-allow_free = false
-
-[[models]]
-id = "glm-5.3"
-channel_id = "deepseek-official"
-upstream_model = "glm-5.3"
-input_per_m = 20
-output_per_m = 80
-allow_free = false
-
-[[models]]
-id = "free:nemotron-lightning"
-channel_id = "deepseek-official"
-upstream_model = "nvidia/nemotron-3.5-lightning:free"
-input_per_m = 0
-output_per_m = 0
-allow_free = true
 
 [[models]]
 id = "free:qwen3-8b"
