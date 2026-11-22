@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { Coins, ExternalLink, Gift, History, RefreshCw, Users } from "lucide-react";
+import { Coins, ExternalLink, Gift, History, RefreshCw, Sparkles, Users } from "lucide-react";
 import {
+  activateTrialCard,
   bindAffiliate,
   fetchUsageLogs,
   redeemCode,
@@ -134,36 +135,100 @@ export function WalletLogsPanel({ mode, jwt, adminKey, me, onRefresh, onOpenAuth
   }
 
   const wallet = me?.wallet;
+  const trialCards = me?.trial_cards || [];
+  const nowUnix = Math.floor(Date.now() / 1000);
+
+  const handleActivateCard = async (cardId: string) => {
+    if (!jwt) return onOpenAuth();
+    setBusy(true);
+    try {
+      await activateTrialCard(jwt, cardId);
+      onToast("体验卡已激活！1 小时 · 100MB 高速流量体验已开始计时");
+      onRefresh();
+    } catch (e) {
+      onToast(`激活失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
-      {/* Topup & Dual-Wallet Card */}
+      {/* Unified Credits Wallet */}
       <div className="card">
         <div className="card-header">
           <h3 className="card-title">
-            <Coins size={17} color="var(--primary)" /> 双钱包与在线自动充值
+            <Coins size={17} color="var(--primary)" /> 积分余额（与 lain42.top 账户实时同步）
           </h3>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
           <div style={{ background: "var(--bg-subtle)", padding: 14, borderRadius: 9, border: "1px solid var(--border)" }}>
-            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>实付 AI 余额</div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>可用积分</div>
             <div style={{ fontSize: 24, fontWeight: 800, color: "var(--primary)", marginTop: 4 }}>
               {wallet?.paid_credits ?? 0}
             </div>
-            <div style={{ fontSize: 11.5, color: "var(--text-muted)" }}>可用于所有付费模型 API</div>
+            <div style={{ fontSize: 11.5, color: "var(--text-muted)" }}>1 CNY = 10 积分 · 不做免费积分区分</div>
           </div>
           <div style={{ background: "var(--bg-subtle)", padding: 14, borderRadius: 9, border: "1px solid var(--border)" }}>
-            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>赠送 / 返佣积分</div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>推广返佣积分</div>
             <div style={{ fontSize: 24, fontWeight: 800, color: "var(--success)", marginTop: 4 }}>
               {wallet?.affiliate_credits ?? 0}
             </div>
-            <div style={{ fontSize: 11.5, color: "var(--text-muted)" }}>
-              赠送 {wallet?.bonus_credits ?? 0}（不可直呼付费 AI）
-            </div>
+            <div style={{ fontSize: 11.5, color: "var(--text-muted)" }}>好友实付充值自动返佣 15%</div>
           </div>
         </div>
-        <a href="/shop" className="btn btn-primary" style={{ width: "100%" }}>
-          前往 /shop 自动充值（支付宝 / 爱发电 / Stripe 秒到账） <ExternalLink size={14} />
+        <a href="https://lain42.top/shop" target="_blank" rel="noreferrer" className="btn btn-primary" style={{ width: "100%" }}>
+          前往 lain42.top/shop 在线充值（支付宝 / 爱发电 / Stripe） <ExternalLink size={14} />
         </a>
+      </div>
+
+      {/* New-User Trial Cards */}
+      <div className="card">
+        <div className="card-header">
+          <h3 className="card-title">
+            <Sparkles size={17} color="var(--warning)" /> 新用户体验卡（不送积分 · 只送体验卡）
+          </h3>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {trialCards.map((c) => {
+            const active = c.expires_unix > nowUnix;
+            const minsLeft = active ? Math.max(1, Math.ceil((c.expires_unix - nowUnix) / 60)) : 0;
+            return (
+              <div
+                key={c.id}
+                style={{
+                  background: "var(--bg-subtle)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 10,
+                  padding: 12,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 10,
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 13.5 }}>{c.title}</div>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{c.spec}</div>
+                </div>
+                {c.expires_unix === 0 ? (
+                  <button className="btn btn-sm btn-primary" disabled={busy} onClick={() => handleActivateCard(c.id)}>
+                    立即激活
+                  </button>
+                ) : active ? (
+                  <span className="pill pill-ok">生效中 · 剩 {minsLeft} 分钟</span>
+                ) : (
+                  <span className="pill pill-guest">已过期</span>
+                )}
+              </div>
+            );
+          })}
+          {trialCards.length === 0 && (
+            <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
+              登录后自动发放：<b>代理高速体验卡（1 小时 · 100MB 高速流量体验）</b>。
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Redemption Code Card */}

@@ -9,9 +9,9 @@ use axum::Json;
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use relay_core::{
-    AdminRoleUpdateReq, AnthropicMsgReq, ChannelUpsertReq, ChatReq, ClientIp, EmbeddingReq,
-    ImageGenReq, KeyIssueReq, PricingRate, RedeemCodeReq, RedemptionCreateReq, RelayError,
-    RerankReq, TokenUsage, UserRole, UserRolePolicy,
+    ActivateTrialReq, AdminRoleUpdateReq, AnthropicMsgReq, ChannelUpsertReq, ChatReq, ClientIp,
+    EmbeddingReq, ImageGenReq, KeyIssueReq, PortalAuthReq, PricingRate, RedeemCodeReq,
+    RedemptionCreateReq, RelayError, RerankReq, TokenUsage, UserRole, UserRolePolicy,
 };
 use relay_engine::{HoldReceipt, UpstreamReply};
 use serde::Deserialize;
@@ -408,6 +408,7 @@ pub async fn api_me(State(st): State<AppState>, headers: HeaderMap) -> Response 
     };
     let keys = st.ledger.list_keys(&uname).await.unwrap_or_default();
     let usage = st.ledger.list_usage(&uname).await.unwrap_or_default();
+    let trial_cards = st.ledger.list_trial_cards(&uname).await.unwrap_or_default();
     Json(json!({
         "ok": true,
         "authenticated": true,
@@ -417,9 +418,70 @@ pub async fn api_me(State(st): State<AppState>, headers: HeaderMap) -> Response 
         "wallet": wallet,
         "keys": keys,
         "usage": usage,
+        "trial_cards": trial_cards,
         "referral_code": uname
     }))
     .into_response()
+}
+
+async fn proxy_portal_auth(st: &AppState, endpoint: &str, req: &PortalAuthReq) -> Response {
+    let origin = st
+        .runtime
+        .cfg
+        .server
+        .portal_verify_url
+        .trim_end_matches("/studio/api/me")
+        .trim_end_matches('/');
+    let url = format!("{origin}/studio/api/{endpoint}");
+    let body = if endpoint == "register" {
+        json!({
+            "username": req.username,
+            "password": req.password,
+            "email": req.email.clone().unwrap_or_else(|| format!("{}@lain42.top", req.username))
+        })
+    } else {
+        json!({ "username": req.username, "password": req.password })
+    };
+    let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(12)).build() {
+        Ok(c) => c,
+        Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "ok": false, "message": e.to_string() }))).into_response(),
+    };
+    match client.post(&url).json(&body).send().await {
+        Ok(resp) => {
+            let status = axum::http::StatusCode::from_u16(resp.status().as_u16())
+                .unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
+            let val: serde_json::Value = resp.json().await.unwrap_or_else(|_| json!({ "ok": false, "message": "portal invalid json" }));
+            (status, Json(val)).into_response()
+        }
+        Err(e) => (
+            axum::http::StatusCode::BAD_GATEWAY,
+            Json(json!({ "ok": false, "message": format!("lain42.top auth unreachable: {e}") })),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn api_portal_login(State(st): State<AppState>, Json(req): Json<PortalAuthReq>) -> Response {
+    proxy_portal_auth(&st, "login", &req).await
+}
+
+pub async fn api_portal_register(State(st): State<AppState>, Json(req): Json<PortalAuthReq>) -> Response {
+    proxy_portal_auth(&st, "register", &req).await
+}
+
+pub async fn api_activate_trial_card(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<ActivateTrialReq>,
+) -> Response {
+    let uname = match resolve_portal_user(&st, &headers).await {
+        Ok(u) => u,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    match st.ledger.activate_trial_card(&uname, &req.card_id).await {
+        Ok(expires_unix) => Json(json!({ "ok": true, "card_id": req.card_id, "expires_unix": expires_unix })).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
 }
 
 pub async fn api_issue_key(

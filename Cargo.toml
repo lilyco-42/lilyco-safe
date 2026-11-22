@@ -30,6 +30,9 @@ base64 = "0.22"
 turso = "0.5"
 async-stream = "0.3"
 eventsource-stream = "0.2"
+sea-query = "1"
+secrecy = "0.10"
+dashmap = "6"
 
 [profile.dev]
 debug = 1

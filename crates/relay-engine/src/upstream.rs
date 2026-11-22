@@ -1,9 +1,9 @@
-use std::collections::HashMap;
-use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use dashmap::DashMap;
 use relay_core::{ChannelConfig, ChatReq, ModelConfig, ModelsCatalog, RelayError, TokenUsage};
 use reqwest::Client;
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 
 use crate::ledger::LiveChannel;
@@ -40,11 +40,11 @@ struct OpenAiResp {
     usage: Option<OpenAiUsage>,
 }
 
-/// Multi-upstream router with circuit-breaker cooldown (3 fields, <= 4).
+/// Multi-upstream router with lock-free DashMap circuit-breaker cooldown (3 fields, <= 4).
 pub struct UpstreamRouter {
     client: Client,
     catalog: ModelsCatalog,
-    cooldowns: Mutex<HashMap<String, u64>>,
+    cooldowns: DashMap<String, u64>,
 }
 
 fn now_unix() -> u64 {
@@ -64,7 +64,7 @@ impl UpstreamRouter {
         Ok(Self {
             client,
             catalog,
-            cooldowns: Mutex::new(HashMap::new()),
+            cooldowns: DashMap::new(),
         })
     }
 
@@ -75,16 +75,12 @@ impl UpstreamRouter {
     fn is_cooled(&self, channel_id: &str) -> bool {
         let now = now_unix();
         self.cooldowns
-            .lock()
-            .ok()
-            .and_then(|m| m.get(channel_id).copied())
-            .is_some_and(|until| until > now)
+            .get(channel_id)
+            .is_some_and(|until| *until > now)
     }
 
     fn trip_cooldown(&self, channel_id: &str, secs: u64) {
-        if let Ok(mut m) = self.cooldowns.lock() {
-            m.insert(channel_id.to_string(), now_unix() + secs);
-        }
+        self.cooldowns.insert(channel_id.to_string(), now_unix() + secs);
     }
 
     /// Try all DB-backed pool channels first (automatic failover on 429/5xx), then fall back to TOML env channel.
@@ -107,7 +103,7 @@ impl UpstreamRouter {
                 weight: 100,
                 enabled: true,
             };
-            match self.send_openai_compat(&ch, model, req, &lc.api_key).await {
+            match self.send_openai_compat(&ch, model, req, lc.api_key.expose_secret()).await {
                 Ok(reply) => return Ok(reply),
                 Err(e) => last_err = Some(e),
             }
@@ -138,7 +134,7 @@ impl UpstreamRouter {
                 weight: 100,
                 enabled: true,
             };
-            match self.open_openai_stream(&ch, model, req, &lc.api_key).await {
+            match self.open_openai_stream(&ch, model, req, lc.api_key.expose_secret()).await {
                 Ok(resp) => return Ok(resp),
                 Err(e) => last_err = Some(e),
             }

@@ -362,6 +362,32 @@ pub struct UsageLogItem {
     pub created_at: i64,
 }
 
+/// New-user trial pass card (<= 4 fields; replaces free bonus points).
+#[derive(Debug, Clone, Serialize)]
+pub struct TrialCardItem {
+    pub id: String,
+    pub title: String,
+    pub spec: String,
+    pub expires_unix: i64, // 0 = not activated yet
+}
+
+/// Portal login/register proxy payload (<= 4 fields, deny_unknown_fields).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortalAuthReq {
+    pub username: String,
+    pub password: String,
+    #[serde(default)]
+    pub email: Option<String>,
+}
+
+/// Trial card activation payload (<= 4 fields, deny_unknown_fields).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivateTrialReq {
+    pub card_id: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

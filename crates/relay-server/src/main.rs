@@ -31,7 +31,10 @@ pub fn build_app(state: AppState) -> Router {
 
     Router::new()
         .route("/api/v1/health", get(handlers::api_health))
+        .route("/api/v1/auth/login", post(handlers::api_portal_login))
+        .route("/api/v1/auth/register", post(handlers::api_portal_register))
         .route("/api/v1/me", get(handlers::api_me))
+        .route("/api/v1/trial-cards/activate", post(handlers::api_activate_trial_card))
         .route("/api/v1/dashboard/stats", get(handlers::api_dashboard_stats))
         .route("/api/v1/logs", get(handlers::api_usage_logs))
         .route("/v1/models", get(handlers::api_list_models))

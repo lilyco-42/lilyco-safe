@@ -1,4 +1,5 @@
 pub mod ledger;
+pub mod query;
 pub mod upstream;
 
 pub use ledger::{

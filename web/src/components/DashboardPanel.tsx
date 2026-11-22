@@ -96,7 +96,7 @@ export function DashboardPanel({ me, health, stats, onNavigate, onOpenAuth }: Pr
       <div className="kpi-grid">
         <div className="kpi-card">
           <div className="kpi-label">
-            <span>实付可用余额（AI 专用）</span>
+            <span>可用积分余额（同步 lain42.top）</span>
             <Wallet size={16} color="var(--primary)" />
           </div>
           <div className="kpi-value">
@@ -104,8 +104,8 @@ export function DashboardPanel({ me, health, stats, onNavigate, onOpenAuth }: Pr
           </div>
           <div className="kpi-sub">
             {authed
-              ? `≈ ¥${(((wallet?.paid_credits ?? 0) / 10)).toFixed(2)} · 赠送 ${wallet?.bonus_credits ?? 0}（严格隔离）`
-              : "1 CNY = 10 实付积分 · 双钱包隔离"}
+              ? `≈ ¥${(((wallet?.paid_credits ?? 0) / 10)).toFixed(2)} · 1 CNY = 10 积分（不送免费积分）`
+              : "1 CNY = 10 积分 · 新用户注册送代理体验卡"}
           </div>
         </div>
 

@@ -5,11 +5,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64::Engine;
 use relay_core::{
     AdminRoleUpdateReq, AdminUserSummary, ChannelUpsertReq, KeyIssueReq, RedemptionCreateReq,
-    RelayError, TokenUsage, UsageLogItem, UserRole, UserRolePolicy,
+    RelayError, TokenUsage, TrialCardItem, UsageLogItem, UserRole, UserRolePolicy,
 };
 use ring::digest::{digest, SHA256};
+use secrecy::SecretString;
 use serde::Serialize;
 use turso::{Builder, Connection, Database, Value};
+
+use crate::query;
 
 /// User dual-wallet state (4 fields, Rule of 4).
 #[derive(Debug, Clone, Serialize)]
@@ -54,13 +57,13 @@ pub struct ChannelMeta {
     pub enabled: bool,
 }
 
-/// Live upstream channel credentials for routing pool (4 fields, Rule of 4).
+/// Live upstream channel credentials for routing pool (4 fields, Rule of 4, zeroized SecretString).
 #[derive(Debug, Clone)]
 pub struct LiveChannel {
     pub id: String,
     pub provider: String,
     pub base_url: String,
-    pub api_key: String,
+    pub api_key: SecretString,
 }
 
 /// Dashboard aggregate stats (4 fields, Rule of 4).
@@ -209,6 +212,16 @@ impl RelayLedger {
                 discount_pct INTEGER NOT NULL DEFAULT 0,
                 banned INTEGER NOT NULL DEFAULT 0,
                 updated_unix INTEGER NOT NULL
+            )",
+            "CREATE TABLE IF NOT EXISTS relay_trial_cards (
+                id TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                card_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                spec TEXT NOT NULL,
+                duration_secs INTEGER NOT NULL DEFAULT 3600,
+                expires_unix INTEGER NOT NULL DEFAULT 0,
+                created_unix INTEGER NOT NULL
             )",
         ];
         for s in stmts {
@@ -674,7 +687,7 @@ impl RelayLedger {
                     id: col_str(&row, 0),
                     provider: col_str(&row, 1),
                     base_url: col_str(&row, 2),
-                    api_key,
+                    api_key: SecretString::from(api_key),
                 });
             }
         }
@@ -762,12 +775,10 @@ impl RelayLedger {
     /// Resolve RBAC policy for a user (`guest` / `user` / `vip` / `admin`).
     pub async fn get_user_policy(&self, username: &str) -> Result<UserRolePolicy, RelayError> {
         let u = username.trim().to_ascii_lowercase();
+        let q = query::sql_get_user_role();
         let mut rows = self
             .conn
-            .query(
-                "SELECT role, discount_pct, banned FROM relay_user_roles WHERE username = ?1",
-                [u.as_str()],
-            )
+            .query(&q, [u.as_str()])
             .await
             .map_err(map_db)?;
         if let Some(row) = rows.next().await.map_err(map_db)? {
@@ -803,15 +814,10 @@ impl RelayLedger {
         let discount = req.discount_pct.unwrap_or_else(|| req.role.default_discount_pct()).min(80);
         let banned = req.banned.unwrap_or(false);
         let now = now_unix();
+        let q = query::sql_upsert_user_role();
         self.conn
             .execute(
-                "INSERT INTO relay_user_roles (username, role, discount_pct, banned, updated_unix)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(username) DO UPDATE SET
-                   role = excluded.role,
-                   discount_pct = excluded.discount_pct,
-                   banned = excluded.banned,
-                   updated_unix = excluded.updated_unix",
+                &q,
                 (u.as_str(), req.role.as_str(), i64::from(discount), if banned { 1i64 } else { 0i64 }, now),
             )
             .await
@@ -822,11 +828,8 @@ impl RelayLedger {
     /// Count active API keys owned by a user (enforces per-role max_keys quota).
     pub async fn count_active_keys(&self, username: &str) -> Result<u32, RelayError> {
         let u = username.trim().to_ascii_lowercase();
-        let mut rows = self
-            .conn
-            .query("SELECT COUNT(*) FROM relay_keys WHERE username = ?1 AND active = 1", [u.as_str()])
-            .await
-            .map_err(map_db)?;
+        let q = query::sql_count_active_keys();
+        let mut rows = self.conn.query(&q, [u.as_str()]).await.map_err(map_db)?;
         if let Some(row) = rows.next().await.map_err(map_db)? {
             return Ok(col_u64(&row, 0) as u32);
         }
@@ -908,6 +911,66 @@ impl RelayLedger {
             });
         }
         Ok(out)
+    }
+
+    /// Grant default new-user trial card (Proxy 1h / 100MB high-speed traffic) once per user.
+    pub async fn ensure_new_user_trial_cards(&self, username: &str) -> Result<(), RelayError> {
+        let u = username.trim().to_ascii_lowercase();
+        let card_id = format!("trial_proxy_{u}");
+        let now = now_unix();
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO relay_trial_cards
+                 (id, username, card_type, title, spec, duration_secs, expires_unix, created_unix)
+                 VALUES (?1, ?2, 'proxy_1h_100mb', '代理高速体验卡（新用户专享）', '1 小时 · 100MB 高速流量体验', 3600, 0, ?3)",
+                (card_id.as_str(), u.as_str(), now),
+            )
+            .await
+            .map_err(map_db)?;
+        Ok(())
+    }
+
+    pub async fn list_trial_cards(&self, username: &str) -> Result<Vec<TrialCardItem>, RelayError> {
+        self.ensure_new_user_trial_cards(username).await?;
+        let u = username.trim().to_ascii_lowercase();
+        let q = query::sql_list_trial_cards();
+        let mut rows = self.conn.query(&q, [u.as_str()]).await.map_err(map_db)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(map_db)? {
+            out.push(TrialCardItem {
+                id: col_str(&row, 0),
+                title: col_str(&row, 1),
+                spec: col_str(&row, 2),
+                expires_unix: col_u64(&row, 3) as i64,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn activate_trial_card(&self, username: &str, card_id: &str) -> Result<i64, RelayError> {
+        let u = username.trim().to_ascii_lowercase();
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT duration_secs, expires_unix FROM relay_trial_cards WHERE id = ?1 AND username = ?2",
+                (card_id, u.as_str()),
+            )
+            .await
+            .map_err(map_db)?;
+        let row = rows
+            .next()
+            .await
+            .map_err(map_db)?
+            .ok_or_else(|| RelayError::InvalidInput("trial card not found".into()))?;
+        let dur = col_u64(&row, 0).max(60) as i64;
+        let existing_exp = col_u64(&row, 1) as i64;
+        if existing_exp > 0 {
+            return Ok(existing_exp);
+        }
+        let exp = now_unix() + dur;
+        let q = query::sql_update_trial_expiry();
+        self.conn.execute(&q, (exp, card_id, u.as_str())).await.map_err(map_db)?;
+        Ok(exp)
     }
 }
 

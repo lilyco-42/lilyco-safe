@@ -63,6 +63,13 @@ export interface UsageLogItem {
   created_at: number;
 }
 
+export interface TrialCardItem {
+  id: string;
+  title: string;
+  spec: string;
+  expires_unix: number;
+}
+
 export interface MeResp {
   ok: boolean;
   authenticated: boolean;
@@ -72,6 +79,7 @@ export interface MeResp {
   wallet?: UserWallet;
   keys?: ApiKeyItem[];
   usage?: UsageItem[];
+  trial_cards?: TrialCardItem[];
   referral_code?: string;
 }
 
@@ -163,7 +171,7 @@ export async function portalAuth(
   username: string,
   password: string,
 ): Promise<{ token: string; username: string }> {
-  const path = mode === "register" ? "/studio/api/register" : "/studio/api/login";
+  const path = `${API_BASE}/api/v1/auth/${mode}`;
   const body =
     mode === "register"
       ? { username, password, email: `${username}@lain42.top` }
@@ -178,6 +186,19 @@ export async function portalAuth(
   const token = d.token || d.data?.token || "";
   if (!token) throw new Error("未返回登录令牌");
   return { token, username: d.username || username };
+}
+
+export async function activateTrialCard(
+  jwt: string,
+  cardId: string,
+): Promise<{ card_id: string; expires_unix: number }> {
+  return parseJson(
+    await fetch(`${API_BASE}/api/v1/trial-cards/activate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({ card_id: cardId }),
+    }),
+  );
 }
 
 export async function issueApiKey(
