@@ -57,7 +57,8 @@ fn now_unix() -> u64 {
 impl UpstreamRouter {
     pub fn new(catalog: ModelsCatalog) -> Result<Self, RelayError> {
         let client = Client::builder()
-            .timeout(Duration::from_secs(60))
+            .connect_timeout(Duration::from_secs(8))
+            .timeout(Duration::from_secs(90))
             .build()
             .map_err(|e| RelayError::Config(format!("http client init: {e}")))?;
         Ok(Self {
@@ -115,6 +116,78 @@ impl UpstreamRouter {
             Ok(r) => Ok(r),
             Err(e) => Err(last_err.unwrap_or(e)),
         }
+    }
+
+    /// Open a true token-by-token upstream SSE stream (`stream: true`) with pool failover.
+    pub async fn open_chat_stream_with_pool(
+        &self,
+        model: &ModelConfig,
+        req: &ChatReq,
+        pool: &[LiveChannel],
+    ) -> Result<reqwest::Response, RelayError> {
+        let mut last_err: Option<RelayError> = None;
+        for lc in pool {
+            if self.is_cooled(&lc.id) {
+                continue;
+            }
+            let ch = ChannelConfig {
+                id: lc.id.clone(),
+                provider: lc.provider.clone(),
+                base_url: lc.base_url.clone(),
+                api_key_env: String::new(),
+                weight: 100,
+                enabled: true,
+            };
+            match self.open_openai_stream(&ch, model, req, &lc.api_key).await {
+                Ok(resp) => return Ok(resp),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        if let Some(ch) = self.catalog.find_channel(&model.channel_id)
+            && !self.is_cooled(&ch.id)
+            && let Ok(api_key) = std::env::var(&ch.api_key_env)
+            && !api_key.trim().is_empty()
+        {
+            return self.open_openai_stream(ch, model, req, &api_key).await;
+        }
+        Err(last_err.unwrap_or_else(|| RelayError::UpstreamFailed("no live upstream channel".into())))
+    }
+
+    async fn open_openai_stream(
+        &self,
+        ch: &ChannelConfig,
+        model: &ModelConfig,
+        req: &ChatReq,
+        api_key: &str,
+    ) -> Result<reqwest::Response, RelayError> {
+        let url = format!("{}/chat/completions", ch.base_url.trim_end_matches('/'));
+        let mut body = serde_json::json!({
+            "model": model.upstream_model,
+            "messages": req.messages,
+            "stream": true,
+            "stream_options": { "include_usage": true }
+        });
+        if let Some(mt) = req.max_tokens {
+            body["max_tokens"] = serde_json::json!(mt);
+        }
+        let mut builder = self.client.post(&url).bearer_auth(api_key).json(&body);
+        if ch.provider == "openrouter" {
+            builder = builder
+                .header("HTTP-Referer", "https://dev.lain42.top")
+                .header("X-Title", "Lilyco Relay");
+        }
+        let resp = builder.send().await.map_err(|_| {
+            self.trip_cooldown(&ch.id, 30);
+            RelayError::UpstreamFailed(format!("upstream {} stream connect timeout", ch.id))
+        })?;
+        let status = resp.status();
+        if !status.is_success() {
+            if status.as_u16() == 429 || status.is_server_error() {
+                self.trip_cooldown(&ch.id, 30);
+            }
+            return Err(RelayError::UpstreamFailed(format!("upstream {} stream HTTP {}", ch.id, status.as_u16())));
+        }
+        Ok(resp)
     }
 
     /// Forward validated ChatReq to Google AI Studio (Gemini), OpenRouter, or OpenAI-compatible upstream.

@@ -18,3 +18,4 @@ serde_json.workspace = true
 reqwest.workspace = true
 async-stream.workspace = true
 futures-util.workspace = true
+eventsource-stream.workspace = true

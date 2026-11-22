@@ -441,6 +441,38 @@ table.data-table tr:hover td {
   z-index: 60;
 }
 
+/* Markdown Prose inside Streaming Playground */
+.md-prose p { margin: 0 0 8px; }
+.md-prose p:last-child { margin-bottom: 0; }
+.md-prose ul, .md-prose ol { margin: 4px 0 8px; padding-left: 20px; }
+.md-prose pre {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 12.5px;
+  margin: 8px 0;
+}
+.md-prose code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  background: rgba(79, 70, 229, 0.1);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.md-prose pre code { background: transparent; padding: 0; color: inherit; }
+.md-prose table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 12.5px; }
+.md-prose th, .md-prose td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+.md-prose th { background: var(--bg-hover); font-weight: 600; }
+.md-prose blockquote {
+  margin: 8px 0;
+  padding: 6px 12px;
+  border-left: 3px solid var(--primary);
+  background: var(--primary-soft);
+  border-radius: 0 6px 6px 0;
+}
+
 @media (max-width: 860px) {
   .sidebar { display: none; }
   .content-wrap { padding: 14px; }

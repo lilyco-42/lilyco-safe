@@ -29,6 +29,7 @@ ring = "0.17"
 base64 = "0.22"
 turso = "0.5"
 async-stream = "0.3"
+eventsource-stream = "0.2"
 
 [profile.dev]
 debug = 1

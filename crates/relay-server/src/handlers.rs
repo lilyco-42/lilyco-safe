@@ -2,16 +2,18 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 
 use axum::extract::{ConnectInfo, Path, State};
-use axum::http::HeaderMap;
+use axum::http::{header, HeaderMap, HeaderValue};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use eventsource_stream::Eventsource;
+use futures_util::StreamExt;
 use relay_core::{
     AdminRoleUpdateReq, AnthropicMsgReq, ChannelUpsertReq, ChatReq, ClientIp, EmbeddingReq,
     ImageGenReq, KeyIssueReq, PricingRate, RedeemCodeReq, RedemptionCreateReq, RelayError,
-    RerankReq, UserRole,
+    RerankReq, TokenUsage, UserRole, UserRolePolicy,
 };
-use relay_engine::UpstreamReply;
+use relay_engine::{HoldReceipt, UpstreamReply};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -154,6 +156,70 @@ async fn execute_chat_pipeline(
     }
 }
 
+struct StreamBilling {
+    hold: HoldReceipt,
+    model_id: String,
+    rate: PricingRate,
+    policy: UserRolePolicy,
+}
+
+async fn open_chat_stream_pipeline(
+    st: &AppState,
+    ip: &ClientIp,
+    headers: &HeaderMap,
+    req: &ChatReq,
+) -> Result<(reqwest::Response, StreamBilling, u64), RelayError> {
+    st.risk.check_ip(ip)?;
+    req.validate()?;
+    let raw_key = AppState::extract_bearer(headers).ok_or_else(|| {
+        st.risk.record_auth_failure(ip);
+        RelayError::Unauthorized("missing bearer api key".into())
+    })?;
+    let model = st
+        .router
+        .catalog()
+        .find_model(&req.model)
+        .ok_or_else(|| RelayError::ModelNotFound(format!("unknown model {}", req.model)))?;
+    let verified = match st.ledger.verify_api_key(&raw_key, &model.id).await {
+        Ok(k) => k,
+        Err(e) => {
+            st.risk.record_auth_failure(ip);
+            return Err(e);
+        }
+    };
+    st.risk.check_key_ip_whitelist(ip, &verified.allowed_ips)?;
+    let key_rec = verified.record;
+    let policy = st.ledger.get_user_policy(&key_rec.username).await?;
+    if policy.banned {
+        return Err(RelayError::Forbidden("account is suspended".into()));
+    }
+    let rate = PricingRate {
+        input_per_m: model.input_per_m,
+        output_per_m: model.output_per_m,
+        allow_free: model.allow_free,
+    };
+    let prompt_est = req.estimate_prompt_tokens();
+    let est_out = req.max_tokens.unwrap_or(512) as u64;
+    let est_hold = policy.apply_discount(rate.calculate_credits(TokenUsage {
+        prompt_tokens: prompt_est,
+        completion_tokens: est_out,
+    }));
+    st.risk.check_key_spend(&key_rec.id, est_hold)?;
+    let hold = st.ledger.pre_hold_paid(&key_rec, est_hold).await?;
+    let pool = st.ledger.find_live_channels(&model.id).await.unwrap_or_default();
+    match st.router.open_chat_stream_with_pool(model, req, &pool).await {
+        Ok(resp) => Ok((
+            resp,
+            StreamBilling { hold, model_id: model.id.clone(), rate, policy },
+            prompt_est,
+        )),
+        Err(e) => {
+            let _ = st.ledger.refund_hold(&hold, &model.id).await;
+            Err(e)
+        }
+    }
+}
+
 pub async fn api_openai_chat(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -164,26 +230,62 @@ pub async fn api_openai_chat(
         Ok(v) => v,
         Err(e) => return st.err_response(&headers, e),
     };
+    if req.stream {
+        let (upstream_resp, billing, prompt_est) =
+            match open_chat_stream_pipeline(&st, &ip, &headers, &req).await {
+                Ok(v) => v,
+                Err(e) => return st.err_response(&headers, e),
+            };
+        let ledger = st.ledger.clone();
+        let stream = async_stream::stream! {
+            let mut es = upstream_resp.bytes_stream().eventsource();
+            let mut final_usage: Option<TokenUsage> = None;
+            let mut est_chars: u64 = 0;
+            let mut saw_done = false;
+            while let Some(item) = es.next().await {
+                if let Ok(ev) = item {
+                    let data = ev.data;
+                    if data.trim() == "[DONE]" {
+                        saw_done = true;
+                        yield Ok::<Event, Infallible>(Event::default().data("[DONE]"));
+                        break;
+                    }
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                        if let Some(u) = v.get("usage")
+                            && u.is_object()
+                        {
+                            let p = u.get("prompt_tokens").and_then(|x| x.as_u64()).unwrap_or(prompt_est);
+                            let c = u.get("completion_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
+                            if p > 0 || c > 0 {
+                                final_usage = Some(TokenUsage { prompt_tokens: p, completion_tokens: c });
+                            }
+                        }
+                        if let Some(delta) = v.pointer("/choices/0/delta/content").and_then(|x| x.as_str()) {
+                            est_chars = est_chars.saturating_add(delta.len() as u64);
+                        }
+                    }
+                    yield Ok::<Event, Infallible>(Event::default().data(data));
+                }
+            }
+            if !saw_done {
+                yield Ok::<Event, Infallible>(Event::default().data("[DONE]"));
+            }
+            let usage = final_usage.unwrap_or(TokenUsage {
+                prompt_tokens: prompt_est,
+                completion_tokens: (est_chars / 3).max(1),
+            });
+            let actual = billing.policy.apply_discount(billing.rate.calculate_credits(usage));
+            let _ = ledger.settle_hold(&billing.hold, &billing.model_id, usage, actual).await;
+        };
+        let mut resp = Sse::new(stream).keep_alive(KeepAlive::default()).into_response();
+        resp.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        resp.headers_mut().insert("x-accel-buffering", HeaderValue::from_static("no"));
+        return resp;
+    }
     let reply = match execute_chat_pipeline(&st, &ip, &headers, &req).await {
         Ok(r) => r,
         Err(e) => return st.err_response(&headers, e),
     };
-    if req.stream {
-        let id = reply.id.clone();
-        let model = reply.model.clone();
-        let text = reply.content.clone();
-        let stream = async_stream::stream! {
-            let chunk = json!({
-                "id": id,
-                "object": "chat.completion.chunk",
-                "model": model,
-                "choices": [{ "index": 0, "delta": { "role": "assistant", "content": text }, "finish_reason": "stop" }]
-            });
-            yield Ok::<Event, Infallible>(Event::default().data(chunk.to_string()));
-            yield Ok::<Event, Infallible>(Event::default().data("[DONE]"));
-        };
-        return Sse::new(stream).keep_alive(KeepAlive::default()).into_response();
-    }
     Json(json!({
         "id": reply.id,
         "object": "chat.completion",

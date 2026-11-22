@@ -1,5 +1,6 @@
 import {
   Activity,
+  BarChart3,
   Crown,
   KeyRound,
   ShieldCheck,
@@ -7,6 +8,7 @@ import {
   Wallet,
   ArrowRight,
 } from "lucide-react";
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { DashboardStatsResp, HealthResp, MeResp, UserRole } from "../api";
 
 interface Props {
@@ -157,6 +159,39 @@ export function DashboardPanel({ me, health, stats, onNavigate, onOpenAuth }: Pr
           </div>
         </div>
       </div>
+
+      {/* Live Model Usage Chart (Recharts) */}
+      {authed && me?.usage && me.usage.length > 0 && (
+        <div className="card">
+          <div className="card-header">
+            <h3 className="card-title">
+              <BarChart3 size={17} color="var(--primary)" /> 最近调用 Token 分布（Recharts 实时统计）
+            </h3>
+            <button className="btn btn-sm" onClick={() => onNavigate("logs")}>
+              查看完整调用日志
+            </button>
+          </div>
+          <div style={{ width: "100%", height: 220 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={me.usage.slice(0, 10).map((u, i) => ({
+                  name: `${u.model.slice(0, 14)} #${i + 1}`,
+                  Prompt: u.prompt_tokens,
+                  Completion: u.completion_tokens,
+                }))}
+                margin={{ top: 8, right: 16, left: 0, bottom: 0 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis dataKey="name" tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
+                <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
+                <Tooltip />
+                <Bar dataKey="Prompt" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="Completion" fill="#10b981" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
 
       {/* 3-Step Quickstart Onboarding Guide */}
       <div className="card">

@@ -264,6 +264,69 @@ export async function sendChat(
   };
 }
 
+export async function sendChatStream(
+  apiKey: string,
+  model: string,
+  messages: ChatTurn[],
+  maxTokens: number,
+  callbacks: {
+    onDelta: (text: string) => void;
+    onUsage?: (usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }) => void;
+    signal?: AbortSignal;
+  },
+): Promise<void> {
+  const r = await fetch(`${API_BASE}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({ model, messages, stream: true, max_tokens: maxTokens }),
+    signal: callbacks.signal,
+  });
+  if (!r.ok) {
+    const txt = await r.text();
+    let msg = txt || `HTTP ${r.status}`;
+    try {
+      const j = JSON.parse(txt);
+      msg = j.message || j.detail || j.error || msg;
+    } catch {
+      // plain text error
+    }
+    throw new Error(msg);
+  }
+  if (!r.body) throw new Error("浏览器不支持 ReadableStream");
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buf = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+      try {
+        const j = JSON.parse(payload);
+        const delta = j.choices?.[0]?.delta?.content;
+        if (typeof delta === "string" && delta.length > 0) {
+          callbacks.onDelta(delta);
+        }
+        if (j.usage && typeof j.usage === "object" && callbacks.onUsage) {
+          const p = Number(j.usage.prompt_tokens || 0);
+          const c = Number(j.usage.completion_tokens || 0);
+          const t = Number(j.usage.total_tokens || p + c);
+          if (t > 0) callbacks.onUsage({ prompt_tokens: p, completion_tokens: c, total_tokens: t });
+        }
+      } catch {
+        // ignore partial json
+      }
+    }
+  }
+}
+
 // Admin APIs (supports either Admin JWT OR X-Admin-Key)
 export async function adminListChannels(jwt: string, adminKey: string): Promise<ChannelItem[]> {
   const d = await parseJson<{ channels: ChannelItem[] }>(

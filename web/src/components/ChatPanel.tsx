@@ -1,6 +1,8 @@
-import { useState } from "react";
-import { Bot, KeyRound, Send, Sparkles, Trash2, User } from "lucide-react";
-import { issueApiKey, sendChat, type ChatTurn, type ModelItem } from "../api";
+import { useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { Bot, KeyRound, Send, Sparkles, Square, Trash2, User } from "lucide-react";
+import { issueApiKey, sendChatStream, type ChatTurn, type ModelItem } from "../api";
 
 interface Props {
   jwt: string;
@@ -15,9 +17,9 @@ interface Props {
 }
 
 const QUICK_PROMPTS = [
-  "你好，介绍一下你自己",
-  "用 Rust 写一个带错误处理的 Hello World",
-  "1 + 1 等于几？只回答数字",
+  "你好，用 3 点介绍 Lilyco AI Studio",
+  "用 Rust 写一个异步 SSE 流式服务端示例",
+  "用 Markdown 表格对比 OpenAI 与 Anthropic 协议",
 ];
 
 export function ChatPanel({
@@ -31,13 +33,14 @@ export function ChatPanel({
   onOpenAuth,
   onToast,
 }: Props) {
-  const [sysPrompt, setSysPrompt] = useState("你是一个专业、简洁的中文 AI 工程助手。");
+  const [sysPrompt, setSysPrompt] = useState("你是一个专业、简洁的中文 AI 工程助手，善用 Markdown 排版与代码块。");
   const [input, setInput] = useState("");
-  const [maxTokens, setMaxTokens] = useState(512);
+  const [maxTokens, setMaxTokens] = useState(1024);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
-  const [lastUsage, setLastUsage] = useState<string>("");
+  const [metrics, setMetrics] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [issuing, setIssuing] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   const handleQuickKey = async () => {
     if (!jwt) return onOpenAuth();
@@ -60,6 +63,13 @@ export function ChatPanel({
     }
   };
 
+  const handleStop = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setBusy(false);
+    onToast("已停止流式输出");
+  };
+
   const handleSend = async (overrideText?: string) => {
     const text = (overrideText ?? input).trim();
     if (!text || busy) return;
@@ -67,37 +77,55 @@ export function ChatPanel({
       onToast("请先点击左侧「一键生成 API Key」或粘贴您的 sk-l42-... 令牌");
       return;
     }
-    const nextTurns: ChatTurn[] = [...turns, { role: "user", content: text }];
-    setTurns(nextTurns);
+    const baseTurns: ChatTurn[] = [...turns, { role: "user", content: text }];
+    setTurns([...baseTurns, { role: "assistant", content: "" }]);
     if (!overrideText) setInput("");
     setBusy(true);
+    setMetrics("连接上游流式通道中...");
+
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     const t0 = performance.now();
+    let ttftMs: number | null = null;
+    let streamed = "";
+    let usageText = "";
+
     try {
       const payload: ChatTurn[] = sysPrompt.trim()
-        ? [{ role: "system", content: sysPrompt.trim() }, ...nextTurns]
-        : nextTurns;
-      const res = await sendChat(apiKey.trim(), selectedModel, payload, maxTokens);
-      const sec = ((performance.now() - t0) / 1000).toFixed(2);
-      setTurns([...nextTurns, { role: "assistant", content: res.reply }]);
-      if (res.usage) {
-        setLastUsage(
-          `耗时 ${sec}s · Prompt ${res.usage.prompt_tokens} + Completion ${res.usage.completion_tokens} = ${res.usage.total_tokens} tokens`,
-        );
-      } else {
-        setLastUsage(`耗时 ${sec}s`);
-      }
+        ? [{ role: "system", content: sysPrompt.trim() }, ...baseTurns]
+        : baseTurns;
+      await sendChatStream(apiKey.trim(), selectedModel, payload, maxTokens, {
+        signal: ctrl.signal,
+        onDelta: (chunk) => {
+          if (ttftMs === null) {
+            ttftMs = Math.round(performance.now() - t0);
+          }
+          streamed += chunk;
+          setTurns([...baseTurns, { role: "assistant", content: streamed }]);
+          setMetrics(`SSE 流式输出中 · 首字延迟 ${ttftMs}ms`);
+        },
+        onUsage: (u) => {
+          usageText = ` · ${u.prompt_tokens}+${u.completion_tokens}=${u.total_tokens} tokens`;
+        },
+      });
+      const totalSec = ((performance.now() - t0) / 1000).toFixed(2);
+      setMetrics(`完成 · 首字 ${ttftMs ?? 0}ms · 总耗时 ${totalSec}s${usageText}`);
       onAfterChat();
     } catch (e) {
-      const msg = (e as Error).message;
-      onToast(`调用失败：${msg}`);
-      setTurns([
-        ...nextTurns,
-        {
-          role: "assistant",
-          content: `⚠️ 调用失败：${msg}\n\n提示：当前服务器位于国内华为云，推荐使用极速直连模型 deepseek-v4.1-flash / kimi-k3.1-pro / glm-5.3；Google Gemini 与 OpenRouter 需在渠道池配置国内可达反代地址。`,
-        },
-      ]);
+      if ((e as Error).name !== "AbortError") {
+        const msg = (e as Error).message;
+        onToast(`调用失败：${msg}`);
+        setTurns([
+          ...baseTurns,
+          {
+            role: "assistant",
+            content: `⚠️ **调用失败**：${msg}\n\n> 提示：当前节点位于国内华为云，推荐使用极速直连模型 \`deepseek-v4.1-flash\` / \`kimi-k3.1-pro\` / \`glm-5.3\`。`,
+          },
+        ]);
+        setMetrics(`失败：${msg}`);
+      }
     } finally {
+      abortRef.current = null;
       setBusy(false);
     }
   };
@@ -108,7 +136,11 @@ export function ChatPanel({
     <div style={{ display: "grid", gridTemplateColumns: "290px 1fr", gap: 16, alignItems: "start" }}>
       {/* Left Settings Card */}
       <div className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <h3 className="card-title">演练场配置</h3>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <h3 className="card-title">演练场配置</h3>
+          <span className="pill pill-ok" style={{ fontSize: 11 }}>SSE 真流式</span>
+        </div>
+
         <div>
           <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
             选择模型（推荐 deepseek-v4.1-flash）
@@ -158,9 +190,9 @@ export function ChatPanel({
           </label>
           <input
             type="range"
-            min={64}
+            min={128}
             max={4096}
-            step={64}
+            step={128}
             value={maxTokens}
             onChange={(e) => setMaxTokens(Number(e.target.value))}
             style={{ width: "100%" }}
@@ -179,20 +211,20 @@ export function ChatPanel({
           />
         </div>
 
-        <button className="btn btn-sm" onClick={() => { setTurns([]); setLastUsage(""); }}>
+        <button className="btn btn-sm" onClick={() => { setTurns([]); setMetrics(""); }}>
           <Trash2 size={13} /> 清空对话
         </button>
-        {lastUsage && <div className="mono" style={{ fontSize: 11.5, color: "var(--success)" }}>{lastUsage}</div>}
+        {metrics && <div className="mono" style={{ fontSize: 11.5, color: "var(--success)" }}>{metrics}</div>}
       </div>
 
       {/* Right Chat Stream */}
-      <div className="card" style={{ display: "flex", flexDirection: "column", minHeight: 520 }}>
-        <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 12, marginBottom: 14 }}>
+      <div className="card" style={{ display: "flex", flexDirection: "column", minHeight: 540 }}>
+        <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 14, marginBottom: 14 }}>
           {turns.length === 0 && (
-            <div style={{ margin: "auto", textAlign: "center", color: "var(--text-muted)", padding: 28, maxWidth: 460 }}>
+            <div style={{ margin: "auto", textAlign: "center", color: "var(--text-muted)", padding: 28, maxWidth: 480 }}>
               <Bot size={36} style={{ opacity: 0.45, marginBottom: 8 }} />
               <div style={{ fontWeight: 700, color: "var(--text)", fontSize: 15 }}>
-                点下方快捷示例，1 秒实测您的 API Key
+                实时 SSE 逐字流式对话 + Markdown 渲染
               </div>
               <div style={{ fontSize: 12.5, marginTop: 4, marginBottom: 14 }}>
                 当前模型：<span className="mono">{selectedModel}</span>
@@ -233,39 +265,49 @@ export function ChatPanel({
                 {t.role === "user" ? <User size={15} /> : <Bot size={15} />}
               </div>
               <div
+                className={t.role === "assistant" ? "md-prose" : undefined}
                 style={{
-                  maxWidth: "80%",
+                  maxWidth: "82%",
                   padding: "10px 14px",
                   borderRadius: 10,
                   background: t.role === "user" ? "var(--primary)" : "var(--bg-subtle)",
                   color: t.role === "user" ? "#fff" : "var(--text)",
-                  whiteSpace: "pre-wrap",
-                  lineHeight: 1.6,
+                  lineHeight: 1.65,
                   border: t.role === "user" ? "none" : "1px solid var(--border)",
+                  whiteSpace: t.role === "user" ? "pre-wrap" : "normal",
                 }}
               >
-                {t.content}
+                {t.role === "assistant" ? (
+                  t.content ? (
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{t.content}</ReactMarkdown>
+                  ) : (
+                    <span style={{ color: "var(--text-muted)", fontSize: 13 }}>思考中...</span>
+                  )
+                ) : (
+                  t.content
+                )}
               </div>
             </div>
           ))}
-          {busy && (
-            <div style={{ fontSize: 12.5, color: "var(--primary)", paddingLeft: 40 }}>
-              正在调用 {selectedModel}...
-            </div>
-          )}
         </div>
 
         <div style={{ display: "flex", gap: 10 }}>
           <input
             className="input"
-            placeholder="输入问题，按 Enter 发送..."
+            placeholder="输入问题，按 Enter 实时流式输出..."
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
           />
-          <button className="btn btn-primary" disabled={busy} onClick={() => handleSend()}>
-            <Send size={15} /> {busy ? "生成中..." : "发送"}
-          </button>
+          {busy ? (
+            <button className="btn btn-danger" onClick={handleStop}>
+              <Square size={14} /> 停止
+            </button>
+          ) : (
+            <button className="btn btn-primary" onClick={() => handleSend()}>
+              <Send size={15} /> 发送
+            </button>
+          )}
         </div>
       </div>
     </div>
