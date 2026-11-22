@@ -7,8 +7,9 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use relay_core::{
-    AnthropicMsgReq, ChannelUpsertReq, ChatReq, ClientIp, EmbeddingReq, ImageGenReq, KeyIssueReq,
-    PricingRate, RedeemCodeReq, RedemptionCreateReq, RelayError, RerankReq,
+    AdminRoleUpdateReq, AnthropicMsgReq, ChannelUpsertReq, ChatReq, ClientIp, EmbeddingReq,
+    ImageGenReq, KeyIssueReq, PricingRate, RedeemCodeReq, RedemptionCreateReq, RelayError,
+    RerankReq, UserRole,
 };
 use relay_engine::UpstreamReply;
 use serde::Deserialize;
@@ -121,23 +122,28 @@ async fn execute_chat_pipeline(
     };
     st.risk.check_key_ip_whitelist(ip, &verified.allowed_ips)?;
     let key_rec = verified.record;
+    let policy = st.ledger.get_user_policy(&key_rec.username).await?;
+    if policy.banned {
+        return Err(RelayError::Forbidden("account is suspended".into()));
+    }
     let rate = PricingRate {
         input_per_m: model.input_per_m,
         output_per_m: model.output_per_m,
         allow_free: model.allow_free,
     };
     let est_out = req.max_tokens.unwrap_or(512) as u64;
-    let est_hold = rate.calculate_credits(relay_core::TokenUsage {
+    let raw_est = rate.calculate_credits(relay_core::TokenUsage {
         prompt_tokens: req.estimate_prompt_tokens(),
         completion_tokens: est_out,
     });
+    let est_hold = policy.apply_discount(raw_est);
     st.risk.check_key_spend(&key_rec.id, est_hold)?;
     let hold = st.ledger.pre_hold_paid(&key_rec, est_hold).await?;
 
     let pool = st.ledger.find_live_channels(&model.id).await.unwrap_or_default();
     match st.router.call_chat_with_pool(model, req, &pool).await {
         Ok(reply) => {
-            let actual = rate.calculate_credits(reply.usage);
+            let actual = policy.apply_discount(rate.calculate_credits(reply.usage));
             let _ = st.ledger.settle_hold(&hold, &model.id, reply.usage, actual).await;
             Ok(reply)
         }
@@ -259,7 +265,33 @@ async fn resolve_portal_user(st: &AppState, headers: &HeaderMap) -> Result<Strin
     Ok(uname.to_string())
 }
 
+/// Allow admin access via either `X-Admin-Key` header OR an authenticated `admin`-role JWT.
+async fn verify_admin_access(st: &AppState, headers: &HeaderMap) -> Result<(), RelayError> {
+    if st.verify_admin(headers).is_ok() {
+        return Ok(());
+    }
+    if AppState::extract_bearer(headers).is_some() {
+        let uname = resolve_portal_user(st, headers).await?;
+        let policy = st.ledger.get_user_policy(&uname).await?;
+        if policy.role == UserRole::Admin && !policy.banned {
+            return Ok(());
+        }
+        return Err(RelayError::Forbidden("admin role required".into()));
+    }
+    Err(RelayError::Unauthorized("admin auth required".into()))
+}
+
 pub async fn api_me(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    if AppState::extract_bearer(&headers).is_none() {
+        return Json(json!({
+            "ok": true,
+            "authenticated": false,
+            "role": UserRole::Guest.as_str(),
+            "policy": { "role": "guest", "max_keys": 0, "discount_pct": 0, "banned": false },
+            "permissions": UserRole::Guest.permissions()
+        }))
+        .into_response();
+    }
     let uname = match resolve_portal_user(&st, &headers).await {
         Ok(u) => u,
         Err(e) => return st.err_response(&headers, e),
@@ -268,10 +300,18 @@ pub async fn api_me(State(st): State<AppState>, headers: HeaderMap) -> Response 
         Ok(w) => w,
         Err(e) => return st.err_response(&headers, e),
     };
+    let policy = match st.ledger.get_user_policy(&uname).await {
+        Ok(p) => p,
+        Err(e) => return st.err_response(&headers, e),
+    };
     let keys = st.ledger.list_keys(&uname).await.unwrap_or_default();
     let usage = st.ledger.list_usage(&uname).await.unwrap_or_default();
     Json(json!({
         "ok": true,
+        "authenticated": true,
+        "role": policy.role.as_str(),
+        "policy": policy,
+        "permissions": policy.role.permissions(),
         "wallet": wallet,
         "keys": keys,
         "usage": usage,
@@ -289,8 +329,43 @@ pub async fn api_issue_key(
         Ok(u) => u,
         Err(e) => return st.err_response(&headers, e),
     };
+    let policy = match st.ledger.get_user_policy(&uname).await {
+        Ok(p) => p,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    if policy.banned {
+        return st.err_response(&headers, RelayError::Forbidden("account is suspended".into()));
+    }
+    let active_count = st.ledger.count_active_keys(&uname).await.unwrap_or(0);
+    if active_count >= policy.max_keys {
+        return st.err_response(
+            &headers,
+            RelayError::Forbidden(format!(
+                "role '{}' max active keys limit ({}) reached; upgrade to VIP for up to 20 keys",
+                policy.role.as_str(),
+                policy.max_keys
+            )),
+        );
+    }
     match st.ledger.issue_key(&uname, &req).await {
         Ok((secret, rec)) => Json(json!({ "ok": true, "api_key": secret, "key": rec })).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_usage_logs(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    if verify_admin_access(&st, &headers).await.is_ok() {
+        return match st.ledger.list_usage_logs(None, 50).await {
+            Ok(logs) => Json(json!({ "ok": true, "scope": "all", "logs": logs })).into_response(),
+            Err(e) => st.err_response(&headers, e),
+        };
+    }
+    let uname = match resolve_portal_user(&st, &headers).await {
+        Ok(u) => u,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    match st.ledger.list_usage_logs(Some(&uname), 50).await {
+        Ok(logs) => Json(json!({ "ok": true, "scope": "own", "logs": logs })).into_response(),
         Err(e) => st.err_response(&headers, e),
     }
 }
@@ -330,7 +405,7 @@ pub async fn api_admin_block_ip(
     headers: HeaderMap,
     Json(req): Json<IpActionReq>,
 ) -> Response {
-    if let Err(e) = st.verify_admin(&headers) {
+    if let Err(e) = verify_admin_access(&st, &headers).await {
         return st.err_response(&headers, e);
     }
     match ClientIp::parse(&req.ip) {
@@ -347,7 +422,7 @@ pub async fn api_admin_unblock_ip(
     headers: HeaderMap,
     Json(req): Json<IpActionReq>,
 ) -> Response {
-    if let Err(e) = st.verify_admin(&headers) {
+    if let Err(e) = verify_admin_access(&st, &headers).await {
         return st.err_response(&headers, e);
     }
     match ClientIp::parse(&req.ip) {
@@ -364,7 +439,7 @@ pub async fn api_admin_topup(
     headers: HeaderMap,
     Json(req): Json<TopupReq>,
 ) -> Response {
-    if let Err(e) = st.verify_admin(&headers) {
+    if let Err(e) = verify_admin_access(&st, &headers).await {
         return st.err_response(&headers, e);
     }
     let bps = st.runtime.cfg.security.affiliate_rate_bps;
@@ -506,7 +581,7 @@ pub async fn api_affiliate_transfer(State(st): State<AppState>, headers: HeaderM
 }
 
 pub async fn api_admin_list_channels(State(st): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(e) = st.verify_admin(&headers) {
+    if let Err(e) = verify_admin_access(&st, &headers).await {
         return st.err_response(&headers, e);
     }
     match st.ledger.list_channels().await {
@@ -520,7 +595,7 @@ pub async fn api_admin_upsert_channel(
     headers: HeaderMap,
     Json(req): Json<ChannelUpsertReq>,
 ) -> Response {
-    if let Err(e) = st.verify_admin(&headers) {
+    if let Err(e) = verify_admin_access(&st, &headers).await {
         return st.err_response(&headers, e);
     }
     match st.ledger.upsert_channel(&req).await {
@@ -534,7 +609,7 @@ pub async fn api_admin_delete_channel(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(e) = st.verify_admin(&headers) {
+    if let Err(e) = verify_admin_access(&st, &headers).await {
         return st.err_response(&headers, e);
     }
     match st.ledger.delete_channel(&id).await {
@@ -548,11 +623,35 @@ pub async fn api_admin_create_redemptions(
     headers: HeaderMap,
     Json(req): Json<RedemptionCreateReq>,
 ) -> Response {
-    if let Err(e) = st.verify_admin(&headers) {
+    if let Err(e) = verify_admin_access(&st, &headers).await {
         return st.err_response(&headers, e);
     }
     match st.ledger.create_redemptions(&req).await {
         Ok(codes) => Json(json!({ "ok": true, "codes": codes })).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_admin_list_users(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(e) = verify_admin_access(&st, &headers).await {
+        return st.err_response(&headers, e);
+    }
+    match st.ledger.list_users(100).await {
+        Ok(users) => Json(json!({ "ok": true, "users": users })).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_admin_update_role(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<AdminRoleUpdateReq>,
+) -> Response {
+    if let Err(e) = verify_admin_access(&st, &headers).await {
+        return st.err_response(&headers, e);
+    }
+    match st.ledger.set_user_role(&req).await {
+        Ok(policy) => Json(json!({ "ok": true, "username": req.username, "policy": policy })).into_response(),
         Err(e) => st.err_response(&headers, e),
     }
 }

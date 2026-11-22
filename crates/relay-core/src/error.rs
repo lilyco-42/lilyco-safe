@@ -16,6 +16,8 @@ pub enum RelayError {
     InvalidInput(String),
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+    #[error("forbidden: {0}")]
+    Forbidden(String),
     #[error("ip_blocked: {0}")]
     IpBlocked(String),
     #[error("rate_limited: {0}")]
@@ -39,6 +41,7 @@ impl RelayError {
         match self {
             Self::InvalidInput(_) => "invalid_input",
             Self::Unauthorized(_) => "unauthorized",
+            Self::Forbidden(_) => "forbidden",
             Self::IpBlocked(_) => "ip_blocked",
             Self::RateLimited(_) => "rate_limited",
             Self::InsufficientPaid(_) => "insufficient_paid",
@@ -55,7 +58,7 @@ impl RelayError {
             Self::InvalidInput(_) => 400,
             Self::Unauthorized(_) => 401,
             Self::InsufficientPaid(_) => 402,
-            Self::IpBlocked(_) | Self::DrainGuard(_) => 403,
+            Self::Forbidden(_) | Self::IpBlocked(_) | Self::DrainGuard(_) => 403,
             Self::ModelNotFound(_) => 404,
             Self::RateLimited(_) => 429,
             Self::UpstreamFailed(_) => 502,

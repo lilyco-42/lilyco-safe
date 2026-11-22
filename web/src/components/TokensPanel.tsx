@@ -1,129 +1,254 @@
 import { useState } from "react";
-import { Copy, Gift, KeyRound, Plus, Trash2 } from "lucide-react";
-import { issueSubKey, redeemCode, revokeSubKey, transferAffiliate, type MeResp } from "../api";
+import { Copy, KeyRound, Plus, Terminal, Trash2, Lock } from "lucide-react";
+import { issueApiKey, revokeApiKey, type MeResp } from "../api";
 
 interface Props {
-  token: string;
+  jwt: string;
   me: MeResp | null;
-  activeKey: string;
-  onKeyCreated: (secret: string) => void;
-  onRefreshMe: () => void;
+  activeSecret: string;
+  onSecretIssued: (secret: string) => void;
+  onRefresh: () => void;
   onOpenAuth: () => void;
+  onToast: (msg: string) => void;
 }
 
-export function TokensPanel({ token, me, activeKey, onKeyCreated, onRefreshMe, onOpenAuth }: Props) {
-  const [name, setName] = useState("claude-code");
-  const [quota, setQuota] = useState(500);
+export function TokensPanel({
+  jwt,
+  me,
+  activeSecret,
+  onSecretIssued,
+  onRefresh,
+  onOpenAuth,
+  onToast,
+}: Props) {
+  const [name, setName] = useState("cc-switch-main");
+  const [quota, setQuota] = useState("10000");
+  const [rpm, setRpm] = useState("60");
   const [allowedIps, setAllowedIps] = useState("");
-  const [code, setCode] = useState("");
-  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [cfgTab, setCfgTab] = useState<"ccswitch" | "claudecode" | "openai" | "curl">("ccswitch");
 
-  if (!token || !me) {
-    return (
-      <section className="card" style={{ textAlign: "center", padding: 32 }}>
-        <h3 style={{ margin: "0 0 8px" }}>登录后即可申请 API Key（与 dev.lain42.top 实付余额互通）</h3>
-        <p style={{ color: "var(--sub)", fontSize: 14, margin: "0 0 16px" }}>
-          支持 OpenAI、Anthropic (Claude Code)、Cursor、Cherry Studio 与 cc-switch 一键导入。
-        </p>
-        <button className="btn btn-primary" onClick={onOpenAuth}>登录 / 注册统一账户</button>
-      </section>
-    );
-  }
+  const origin = typeof window !== "undefined" ? window.location.origin : "https://dev.lain42.top";
+  const baseV1 = `${origin}/relay/v1`;
+  const demoKey = activeSecret || "sk-l42-请先在上方签发您的专属令牌";
 
-  const baseUrl = `${window.location.origin}/relay`;
-  const sampleKey = activeKey || "sk-l42-请先点击上方申请密钥";
-  const ccSwitchJson = JSON.stringify(
-    { name: "Lilyco Relay", baseUrl: `${baseUrl}/v1`, anthropicBaseUrl: baseUrl, apiKey: sampleKey },
-    null,
-    2,
-  );
+  const snippets: Record<typeof cfgTab, string> = {
+    ccswitch: JSON.stringify(
+      {
+        name: "Lilyco AI Studio",
+        baseUrl: baseV1,
+        apiKey: demoKey,
+        models: ["deepseek-v4.1-flash", "deepseek-v4-pro", "gemini-2.5-flash", "kimi-k3.1-pro"],
+      },
+      null,
+      2,
+    ),
+    claudecode: `# Claude Code / Anthropic 兼容接入\nexport ANTHROPIC_BASE_URL="${origin}/relay"\nexport ANTHROPIC_AUTH_TOKEN="${demoKey}"\nexport ANTHROPIC_MODEL="deepseek-v4.1-flash"\nclaude`,
+    openai: `# OpenAI SDK / Cursor / Cherry Studio / Cline\nBase URL: ${baseV1}\nAPI Key:  ${demoKey}\n推荐模型: deepseek-v4.1-flash / gemini-2.5-flash / kimi-k3.1-pro`,
+    curl: `curl -X POST "${baseV1}/chat/completions" \\\n  -H "Authorization: Bearer ${demoKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"Hello!"}]}'`,
+  };
 
-  async function onCreate(): Promise<void> {
+  const handleCreate = async () => {
+    if (!jwt) {
+      onOpenAuth();
+      return;
+    }
+    setBusy(true);
     try {
-      const res = await issueSubKey(token, {
-        name: name.trim() || "default",
-        quota_limit: Number(quota) || 500,
-        rpm_limit: 60,
-        scope: { allowed_models: [], allowed_ips: allowedIps.trim(), expired_unix: 0, group_name: "default" },
+      const res = await issueApiKey(jwt, {
+        name: name.trim() || "default-key",
+        quota_limit: Math.max(0, Number(quota) || 0),
+        rpm_limit: Math.max(1, Number(rpm) || 60),
+        allowed_ips: allowedIps.trim(),
       });
-      onKeyCreated(res.api_key);
-      setMsg(`申请成功！已自动填入对话测试台：${res.api_key}`);
-      onRefreshMe();
+      onSecretIssued(res.api_key);
+      navigator.clipboard?.writeText(res.api_key);
+      onToast("已签发新 API Key 并复制到剪贴板！");
+      onRefresh();
     } catch (e) {
-      setMsg(`申请失败: ${e instanceof Error ? e.message : String(e)}`);
+      onToast(`签发失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
     }
-  }
+  };
 
-  async function onRedeem(): Promise<void> {
-    if (!code.trim()) return;
+  const handleRevoke = async (keyId: string) => {
+    if (!jwt) return;
+    setBusy(true);
     try {
-      const r = await redeemCode(token, code);
-      setMsg(`兑换成功！+${r.credits} 积分 (${r.wallet_type})`);
-      setCode("");
-      onRefreshMe();
+      await revokeApiKey(jwt, keyId);
+      onToast(`已吊销令牌 ${keyId}`);
+      onRefresh();
     } catch (e) {
-      setMsg(`兑换失败: ${e instanceof Error ? e.message : String(e)}`);
+      onToast(`吊销失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
     }
-  }
+  };
 
-  async function onTransfer(): Promise<void> {
-    try {
-      const amt = await transferAffiliate(token);
-      setMsg(`已将 ${amt} 返佣转入实付余额！`);
-      onRefreshMe();
-    } catch (e) {
-      setMsg(`转入失败: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
+  const authed = Boolean(me?.authenticated);
+  const keys = me?.keys || [];
+  const maxKeys = me?.policy?.max_keys ?? 0;
 
   return (
-    <section className="grid">
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      {/* Create Token Card */}
       <div className="card">
-        <h3 style={{ margin: "0 0 10px", display: "flex", alignItems: "center", gap: 6 }}>
-          <KeyRound size={17} /> 申请 API Key（`sk-l42-...`）
-        </h3>
-        <label>密钥名称<input value={name} onChange={(e) => setName(e.target.value)} /></label>
-        <label style={{ display: "block", marginTop: 8 }}>单 Key 额度上限（积分）<input type="number" value={quota} onChange={(e) => setQuota(Number(e.target.value))} /></label>
-        <label style={{ display: "block", marginTop: 8 }}>IP 白名单（可选，逗号分隔）<input value={allowedIps} onChange={(e) => setAllowedIps(e.target.value)} placeholder="留空表示不限制 IP" /></label>
-        <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={onCreate}><Plus size={15} /> 申请新 API Key</button>
-        <div style={{ marginTop: 14, fontSize: 13 }}>
-          <div style={{ color: "var(--sub)", marginBottom: 6 }}>已生效子密钥 ({me.keys.length})：</div>
-          {me.keys.map((k) => (
-            <div key={k.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderTop: "1px solid var(--border)" }}>
-              <span><code>{k.id}</code> · 已用 {k.used_credits}/{k.quota_limit}</span>
-              <button className="btn" style={{ minHeight: 28, padding: "0 8px" }} onClick={async () => { await revokeSubKey(token, k.id); onRefreshMe(); }}>
-                <Trash2 size={13} /> 吊销
-              </button>
+        <div className="card-header">
+          <h3 className="card-title">
+            <KeyRound size={17} color="var(--primary)" /> 令牌管理（API Keys · {keys.length} / {maxKeys}）
+          </h3>
+          {!authed && (
+            <button className="btn btn-primary btn-sm" onClick={onOpenAuth}>
+              <Lock size={13} /> 登录后签发令牌
+            </button>
+          )}
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
+            gap: 10,
+            marginBottom: 14,
+          }}
+        >
+          <input className="input" placeholder="令牌名称" value={name} onChange={(e) => setName(e.target.value)} />
+          <input className="input" placeholder="额度上限 (0=不限)" value={quota} onChange={(e) => setQuota(e.target.value)} />
+          <input className="input" placeholder="RPM 限速" value={rpm} onChange={(e) => setRpm(e.target.value)} />
+          <input
+            className="input"
+            placeholder="IP 白名单 (逗号分隔，可选)"
+            value={allowedIps}
+            onChange={(e) => setAllowedIps(e.target.value)}
+          />
+          <button className="btn btn-primary" disabled={busy || !authed} onClick={handleCreate}>
+            <Plus size={15} /> 创建新令牌
+          </button>
+        </div>
+
+        {activeSecret && (
+          <div
+            style={{
+              background: "var(--success-soft)",
+              border: "1px solid var(--success)",
+              borderRadius: 9,
+              padding: "10px 14px",
+              marginBottom: 14,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              flexWrap: "wrap",
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--success)" }}>
+                新令牌已签发（仅展示一次，已自动填充至演练场与下方接入配置）
+              </div>
+              <div className="mono" style={{ fontWeight: 700, marginTop: 2 }}>{activeSecret}</div>
             </div>
+            <button
+              className="btn btn-sm btn-primary"
+              onClick={() => {
+                navigator.clipboard?.writeText(activeSecret);
+                onToast("已复制 API Key！");
+              }}
+            >
+              <Copy size={13} /> 复制密钥
+            </button>
+          </div>
+        )}
+
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Key ID</th>
+                <th>所属账号</th>
+                <th>已消耗 / 额度上限</th>
+                <th>状态</th>
+                <th style={{ textAlign: "right" }}>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {keys.map((k) => {
+                const pct = k.quota_limit > 0 ? Math.min(100, Math.round((k.used_credits / k.quota_limit) * 100)) : 0;
+                return (
+                  <tr key={k.id}>
+                    <td className="mono" style={{ fontWeight: 600 }}>{k.id}</td>
+                    <td>{k.username}</td>
+                    <td style={{ minWidth: 180 }}>
+                      <div style={{ fontSize: 12.5, marginBottom: 4 }}>
+                        <b>{k.used_credits}</b> / {k.quota_limit === 0 ? "无上限" : k.quota_limit}
+                      </div>
+                      {k.quota_limit > 0 && (
+                        <div style={{ height: 5, background: "var(--border)", borderRadius: 99, overflow: "hidden" }}>
+                          <div style={{ width: `${pct}%`, height: "100%", background: "var(--primary)" }} />
+                        </div>
+                      )}
+                    </td>
+                    <td><span className="pill pill-ok">正常启用</span></td>
+                    <td style={{ textAlign: "right" }}>
+                      <button
+                        className="btn btn-sm btn-danger"
+                        disabled={busy}
+                        onClick={() => handleRevoke(k.id)}
+                      >
+                        <Trash2 size={13} /> 吊销
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+              {keys.length === 0 && (
+                <tr>
+                  <td colSpan={5} style={{ textAlign: "center", color: "var(--text-muted)", padding: 24 }}>
+                    {authed ? "暂无 API Key，点击上方「创建新令牌」秒级签发" : "请先登录以查看或签发 API Key"}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* One-Click Client Config Card */}
+      <div className="card">
+        <div className="card-header">
+          <h3 className="card-title">
+            <Terminal size={17} color="var(--primary)" /> 一键客户端接入（cc-switch / Claude Code / Cursor / OpenAI SDK）
+          </h3>
+          <button
+            className="btn btn-sm btn-primary"
+            onClick={() => {
+              navigator.clipboard?.writeText(snippets[cfgTab]);
+              onToast("已复制配置代码！");
+            }}
+          >
+            <Copy size={13} /> 复制配置
+          </button>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+          {(
+            [
+              ["ccswitch", "cc-switch JSON"],
+              ["claudecode", "Claude Code"],
+              ["openai", "Cursor / Cherry Studio"],
+              ["curl", "cURL 测试"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              className={`btn btn-sm ${cfgTab === id ? "btn-primary" : ""}`}
+              onClick={() => setCfgTab(id)}
+            >
+              {label}
+            </button>
           ))}
         </div>
+        <div className="code-box">{snippets[cfgTab]}</div>
       </div>
-
-      <div className="card">
-        <h3 style={{ margin: "0 0 10px" }}>cc-switch / Claude Code / Cursor 一键接入</h3>
-        <div style={{ fontSize: 12.5, color: "var(--sub)" }}>OpenAI Base URL: <code>{baseUrl}/v1</code></div>
-        <div style={{ fontSize: 12.5, color: "var(--sub)", marginTop: 4 }}>Anthropic (Claude Code) Base URL: <code>{baseUrl}</code></div>
-        <pre>{ccSwitchJson}</pre>
-        <button className="btn" style={{ marginTop: 8 }} onClick={() => { void navigator.clipboard?.writeText(ccSwitchJson); setMsg("已复制 cc-switch 配置 JSON"); }}>
-          <Copy size={14} /> 复制 cc-switch 配置
-        </button>
-
-        <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
-          <div style={{ fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
-            <Gift size={15} /> 卡密兑换 & 邀请返佣（专属码：<code>{me.referral_code}</code>）
-          </div>
-          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-            <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="输入兑换码 VIP-..." style={{ marginTop: 0 }} />
-            <button className="btn btn-primary" onClick={onRedeem}>兑换</button>
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, fontSize: 13 }}>
-            <span>可转实付返佣: <strong>{me.wallet.affiliate_credits}</strong> 积分</span>
-            <button className="btn" style={{ minHeight: 32 }} onClick={onTransfer}>转入实付余额</button>
-          </div>
-        </div>
-      </div>
-
-      {msg && <div className="card" style={{ gridColumn: "1 / -1" }}><pre style={{ margin: 0, minHeight: 0 }}>{msg}</pre></div>}
-    </section>
+    </div>
   );
 }

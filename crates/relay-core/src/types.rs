@@ -239,6 +239,129 @@ impl PricingRate {
     }
 }
 
+/// RBAC role tier: Guest (unauthenticated), User (standard), Vip (discounted/priority), Admin (full control).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UserRole {
+    Guest,
+    User,
+    Vip,
+    Admin,
+}
+
+impl UserRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Guest => "guest",
+            Self::User => "user",
+            Self::Vip => "vip",
+            Self::Admin => "admin",
+        }
+    }
+
+    pub fn parse_str(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "admin" => Self::Admin,
+            "vip" => Self::Vip,
+            "guest" => Self::Guest,
+            _ => Self::User,
+        }
+    }
+
+    pub fn default_max_keys(self) -> u32 {
+        match self {
+            Self::Guest => 0,
+            Self::User => 5,
+            Self::Vip => 20,
+            Self::Admin => 100,
+        }
+    }
+
+    pub fn default_discount_pct(self) -> u32 {
+        match self {
+            Self::Vip => 15,
+            Self::Admin => 50,
+            _ => 0,
+        }
+    }
+
+    pub fn permissions(self) -> &'static [&'static str] {
+        match self {
+            Self::Guest => &["models:read", "docs:read"],
+            Self::User => &["models:read", "keys:own", "chat:standard", "wallet:own", "logs:own"],
+            Self::Vip => &[
+                "models:read",
+                "keys:vip",
+                "chat:priority",
+                "billing:vip_discount",
+                "wallet:own",
+                "logs:own",
+            ],
+            Self::Admin => &[
+                "models:read",
+                "keys:all",
+                "chat:priority",
+                "billing:admin",
+                "channels:manage",
+                "users:rbac",
+                "risk:manage",
+                "logs:all",
+            ],
+        }
+    }
+}
+
+/// Resolved RBAC policy for a user (<= 4 fields).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserRolePolicy {
+    pub role: UserRole,
+    pub max_keys: u32,
+    pub discount_pct: u32,
+    pub banned: bool,
+}
+
+impl UserRolePolicy {
+    /// Apply integer VIP discount (0..=80%), preserving minimum 1 credit on paid models.
+    pub fn apply_discount(&self, raw_credits: u64) -> u64 {
+        if raw_credits == 0 || self.discount_pct == 0 {
+            return raw_credits;
+        }
+        let pct = u64::from(self.discount_pct.min(80));
+        let discounted = raw_credits.saturating_mul(100 - pct).div_ceil(100);
+        discounted.max(1)
+    }
+}
+
+/// Admin RBAC role update request (<= 4 fields, deny_unknown_fields).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminRoleUpdateReq {
+    pub username: String,
+    pub role: UserRole,
+    #[serde(default)]
+    pub discount_pct: Option<u32>,
+    #[serde(default)]
+    pub banned: Option<bool>,
+}
+
+/// Admin user summary row (<= 4 fields).
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminUserSummary {
+    pub username: String,
+    pub policy: UserRolePolicy,
+    pub paid_credits: i64,
+    pub bonus_credits: i64,
+}
+
+/// Usage log row for dashboard & audit (<= 4 fields).
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageLogItem {
+    pub model: String,
+    pub tokens: u64,
+    pub credits: u64,
+    pub created_at: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,5 +388,16 @@ mod tests {
 
         let free = PricingRate { input_per_m: 0, output_per_m: 0, allow_free: true };
         assert_eq!(free.calculate_credits(TokenUsage { prompt_tokens: 5000, completion_tokens: 2000 }), 0);
+    }
+
+    #[test]
+    fn rbac_vip_discount_and_deny_unknown_fields() {
+        let vip = UserRolePolicy { role: UserRole::Vip, max_keys: 20, discount_pct: 15, banned: false };
+        assert_eq!(vip.apply_discount(100), 85);
+        assert_eq!(vip.apply_discount(1), 1);
+        assert_eq!(vip.apply_discount(0), 0);
+
+        let bad_rbac = r#"{"username":"alice","role":"vip","hack":true}"#;
+        assert!(serde_json::from_str::<AdminRoleUpdateReq>(bad_rbac).is_err());
     }
 }

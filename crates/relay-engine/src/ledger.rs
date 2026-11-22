@@ -3,7 +3,10 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
-use relay_core::{ChannelUpsertReq, KeyIssueReq, RedemptionCreateReq, RelayError, TokenUsage};
+use relay_core::{
+    AdminRoleUpdateReq, AdminUserSummary, ChannelUpsertReq, KeyIssueReq, RedemptionCreateReq,
+    RelayError, TokenUsage, UsageLogItem, UserRole, UserRolePolicy,
+};
 use ring::digest::{digest, SHA256};
 use serde::Serialize;
 use turso::{Builder, Connection, Database, Value};
@@ -199,6 +202,13 @@ impl RelayLedger {
                 wallet_type TEXT NOT NULL DEFAULT 'paid',
                 used_by TEXT NOT NULL DEFAULT '',
                 created_unix INTEGER NOT NULL
+            )",
+            "CREATE TABLE IF NOT EXISTS relay_user_roles (
+                username TEXT PRIMARY KEY,
+                role TEXT NOT NULL DEFAULT 'user',
+                discount_pct INTEGER NOT NULL DEFAULT 0,
+                banned INTEGER NOT NULL DEFAULT 0,
+                updated_unix INTEGER NOT NULL
             )",
         ];
         for s in stmts {
@@ -748,12 +758,192 @@ impl RelayLedger {
             total_credits_charged: 0,
         })
     }
+
+    /// Resolve RBAC policy for a user (`guest` / `user` / `vip` / `admin`).
+    pub async fn get_user_policy(&self, username: &str) -> Result<UserRolePolicy, RelayError> {
+        let u = username.trim().to_ascii_lowercase();
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT role, discount_pct, banned FROM relay_user_roles WHERE username = ?1",
+                [u.as_str()],
+            )
+            .await
+            .map_err(map_db)?;
+        if let Some(row) = rows.next().await.map_err(map_db)? {
+            let role = UserRole::parse_str(&col_str(&row, 0));
+            let discount_pct = (col_u64(&row, 1) as u32).min(80);
+            let banned = col_u64(&row, 2) != 0;
+            return Ok(UserRolePolicy {
+                role,
+                max_keys: role.default_max_keys(),
+                discount_pct,
+                banned,
+            });
+        }
+        let is_env_admin = std::env::var("RELAY_ADMIN_USERS")
+            .unwrap_or_else(|_| "admin,lilyco".into())
+            .split(',')
+            .any(|s| s.trim().eq_ignore_ascii_case(&u));
+        let role = if is_env_admin { UserRole::Admin } else { UserRole::User };
+        Ok(UserRolePolicy {
+            role,
+            max_keys: role.default_max_keys(),
+            discount_pct: role.default_discount_pct(),
+            banned: false,
+        })
+    }
+
+    /// Admin RBAC role assignment (`user` | `vip` | `admin`, VIP discount %, ban toggle).
+    pub async fn set_user_role(&self, req: &AdminRoleUpdateReq) -> Result<UserRolePolicy, RelayError> {
+        let u = req.username.trim().to_ascii_lowercase();
+        if u.is_empty() {
+            return Err(RelayError::InvalidInput("empty username".into()));
+        }
+        let discount = req.discount_pct.unwrap_or_else(|| req.role.default_discount_pct()).min(80);
+        let banned = req.banned.unwrap_or(false);
+        let now = now_unix();
+        self.conn
+            .execute(
+                "INSERT INTO relay_user_roles (username, role, discount_pct, banned, updated_unix)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(username) DO UPDATE SET
+                   role = excluded.role,
+                   discount_pct = excluded.discount_pct,
+                   banned = excluded.banned,
+                   updated_unix = excluded.updated_unix",
+                (u.as_str(), req.role.as_str(), i64::from(discount), if banned { 1i64 } else { 0i64 }, now),
+            )
+            .await
+            .map_err(map_db)?;
+        self.get_user_policy(&u).await
+    }
+
+    /// Count active API keys owned by a user (enforces per-role max_keys quota).
+    pub async fn count_active_keys(&self, username: &str) -> Result<u32, RelayError> {
+        let u = username.trim().to_ascii_lowercase();
+        let mut rows = self
+            .conn
+            .query("SELECT COUNT(*) FROM relay_keys WHERE username = ?1 AND active = 1", [u.as_str()])
+            .await
+            .map_err(map_db)?;
+        if let Some(row) = rows.next().await.map_err(map_db)? {
+            return Ok(col_u64(&row, 0) as u32);
+        }
+        Ok(0)
+    }
+
+    /// Admin list users with RBAC policy and dual-wallet balances.
+    pub async fn list_users(&self, limit: i64) -> Result<Vec<AdminUserSummary>, RelayError> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT u.username, u.paid_credits, u.bonus_credits,
+                        COALESCE(r.role, ''), COALESCE(r.discount_pct, -1), COALESCE(r.banned, 0)
+                 FROM relay_users u
+                 LEFT JOIN relay_user_roles r ON r.username = u.username
+                 ORDER BY u.created_unix DESC LIMIT ?1",
+                [limit.clamp(1, 200)],
+            )
+            .await
+            .map_err(map_db)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(map_db)? {
+            let username = col_str(&row, 0);
+            let paid_credits = col_u64(&row, 1) as i64;
+            let bonus_credits = col_u64(&row, 2) as i64;
+            let raw_role = col_str(&row, 3);
+            let policy = if raw_role.is_empty() {
+                self.get_user_policy(&username).await?
+            } else {
+                let role = UserRole::parse_str(&raw_role);
+                UserRolePolicy {
+                    role,
+                    max_keys: role.default_max_keys(),
+                    discount_pct: (col_u64(&row, 4) as u32).min(80),
+                    banned: col_u64(&row, 5) != 0,
+                }
+            };
+            out.push(AdminUserSummary { username, policy, paid_credits, bonus_credits });
+        }
+        Ok(out)
+    }
+
+    /// List recent usage logs (scoped to user, or all users when username is None).
+    pub async fn list_usage_logs(
+        &self,
+        username: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<UsageLogItem>, RelayError> {
+        let lim = limit.clamp(1, 100);
+        let mut rows = match username {
+            Some(u) => {
+                let low = u.trim().to_ascii_lowercase();
+                self.conn
+                    .query(
+                        "SELECT model, prompt_tokens + completion_tokens, credits_charged, created_unix
+                         FROM relay_usage_logs WHERE username = ?1 ORDER BY created_unix DESC LIMIT ?2",
+                        (low.as_str(), lim),
+                    )
+                    .await
+                    .map_err(map_db)?
+            }
+            None => self
+                .conn
+                .query(
+                    "SELECT model, prompt_tokens + completion_tokens, credits_charged, created_unix
+                     FROM relay_usage_logs ORDER BY created_unix DESC LIMIT ?1",
+                    [lim],
+                )
+                .await
+                .map_err(map_db)?,
+        };
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(map_db)? {
+            out.push(UsageLogItem {
+                model: col_str(&row, 0),
+                tokens: col_u64(&row, 1),
+                credits: col_u64(&row, 2),
+                created_at: col_u64(&row, 3) as i64,
+            });
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use relay_core::KeyScope;
+
+    #[tokio::test]
+    async fn rbac_roles_key_quotas_and_usage_logs_work() {
+        let db = RelayLedger::open(":memory:").await.unwrap();
+        db.sync_portal_wallet("alice", 100).await.unwrap();
+
+        let p0 = db.get_user_policy("alice").await.unwrap();
+        assert_eq!(p0.role, UserRole::User);
+        assert_eq!(p0.max_keys, 5);
+        assert_eq!(p0.discount_pct, 0);
+
+        let p_vip = db
+            .set_user_role(&AdminRoleUpdateReq {
+                username: "alice".into(),
+                role: UserRole::Vip,
+                discount_pct: Some(20),
+                banned: Some(false),
+            })
+            .await
+            .unwrap();
+        assert_eq!(p_vip.role, UserRole::Vip);
+        assert_eq!(p_vip.max_keys, 20);
+        assert_eq!(p_vip.discount_pct, 20);
+        assert_eq!(p_vip.apply_discount(100), 80);
+
+        let users = db.list_users(10).await.unwrap();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].policy.role, UserRole::Vip);
+    }
 
     #[tokio::test]
     async fn dual_wallet_prehold_refund_redemption_and_affiliate_work() {
