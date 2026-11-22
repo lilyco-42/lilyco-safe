@@ -67,7 +67,14 @@ export function App() {
   );
   const [jwt, setJwt] = useState<string>(() => localStorage.getItem("wb-token") || "");
   const [adminKey, setAdminKey] = useState<string>(() => localStorage.getItem("lilyco-admin-key") || "");
-  const [activeSecret, setActiveSecret] = useState<string>("");
+  const [activeSecret, setActiveSecretState] = useState<string>(
+    () => localStorage.getItem("lilyco-active-api-key") || "",
+  );
+  const setActiveSecret = useCallback((k: string) => {
+    setActiveSecretState(k);
+    if (k.trim()) localStorage.setItem("lilyco-active-api-key", k.trim());
+    else localStorage.removeItem("lilyco-active-api-key");
+  }, []);
 
   const [health, setHealth] = useState<HealthResp | null>(null);
   const [models, setModels] = useState<ModelItem[]>([]);

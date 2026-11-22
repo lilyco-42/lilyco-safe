@@ -4,8 +4,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use relay_core::{
-    AdminRoleUpdateReq, AdminUserSummary, ChannelUpsertReq, KeyIssueReq, RedemptionCreateReq,
-    RelayError, TokenUsage, TrialCardItem, UsageLogItem, UserRole, UserRolePolicy,
+    AdminRoleUpdateReq, AdminUserSummary, ChannelUpsertReq, KeyIssueReq, KeyScope,
+    RedemptionCreateReq, RelayError, ResellKeyBatchReq, TokenUsage, TrialCardItem, UsageLogItem,
+    UserRole, UserRolePolicy,
 };
 use ring::digest::{digest, SHA256};
 use secrecy::SecretString;
@@ -971,6 +972,72 @@ impl RelayLedger {
         let q = query::sql_update_trial_expiry();
         self.conn.execute(&q, (exp, card_id, u.as_str())).await.map_err(map_db)?;
         Ok(exp)
+    }
+
+    /// Fetch a single live channel by id via sea-query for probing & balance check.
+    pub async fn get_live_channel(&self, id: &str) -> Result<LiveChannel, RelayError> {
+        let q = query::sql_get_channel_by_id();
+        let mut rows = self.conn.query(&q, [id]).await.map_err(map_db)?;
+        let row = rows
+            .next()
+            .await
+            .map_err(map_db)?
+            .ok_or_else(|| RelayError::ModelNotFound(format!("channel {id} not found")))?;
+        Ok(LiveChannel {
+            id: col_str(&row, 0),
+            provider: col_str(&row, 1),
+            base_url: col_str(&row, 2),
+            api_key: SecretString::from(col_str(&row, 3)),
+        })
+    }
+
+    /// Mint a batch of pre-funded ready-to-sell API keys backed by an isolated batch wallet.
+    pub async fn mint_resell_key_batch(
+        &self,
+        req: &ResellKeyBatchReq,
+    ) -> Result<Vec<String>, RelayError> {
+        let count = req.count.clamp(1, 100);
+        if req.quota_credits == 0 {
+            return Err(RelayError::InvalidInput("quota_credits must be > 0".into()));
+        }
+        let now = now_unix();
+        let exp = if req.expires_days > 0 {
+            now + i64::from(req.expires_days) * 86_400
+        } else {
+            0
+        };
+        let slug: String = req
+            .batch_name
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+            .take(24)
+            .collect();
+        let batch_user = format!(
+            "resell_{}_{}",
+            if slug.is_empty() { "batch" } else { &slug },
+            now % 100_000
+        )
+        .to_ascii_lowercase();
+        let total_fund = req.quota_credits.saturating_mul(u64::from(count));
+        self.sync_portal_wallet(&batch_user, total_fund).await?;
+
+        let mut keys = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let issue = KeyIssueReq {
+                name: format!("{}-{}", req.batch_name.trim(), i + 1),
+                quota_limit: req.quota_credits,
+                rpm_limit: 60,
+                scope: KeyScope {
+                    allowed_models: vec![],
+                    allowed_ips: String::new(),
+                    expired_unix: exp,
+                    group_name: "resell".into(),
+                },
+            };
+            let (secret, _) = self.issue_key(&batch_user, &issue).await?;
+            keys.push(secret);
+        }
+        Ok(keys)
     }
 }
 

@@ -6,7 +6,8 @@ pub use config::{ChannelConfig, GatewayConfig, I18nBundle, ModelConfig, ModelsCa
 pub use error::{ErrorBody, RelayError};
 pub use types::{
     ActivateTrialReq, AdminRoleUpdateReq, AdminUserSummary, AnthropicMsgReq, ChannelEndpoint,
-    ChannelRouting, ChannelUpsertReq, ChatMessage, ChatReq, ClientIp, EmbeddingReq, ImageGenReq,
-    KeyIssueReq, KeyScope, PortalAuthReq, PricingRate, RedeemCodeReq, RedemptionCreateReq,
-    RerankReq, TokenUsage, TrialCardItem, UsageLogItem, UserRole, UserRolePolicy,
+    ChannelProbeResult, ChannelRouting, ChannelUpsertReq, ChatMessage, ChatReq, ClientIp,
+    EmbeddingReq, ImageGenReq, KeyIssueReq, KeyScope, PortalAuthReq, PricingRate, RedeemCodeReq,
+    RedemptionCreateReq, RerankReq, ResellKeyBatchReq, TokenUsage, TrialCardItem, UsageLogItem,
+    UserRole, UserRolePolicy,
 };

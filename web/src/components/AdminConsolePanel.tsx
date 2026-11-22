@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react";
 import {
+  Activity,
   Ban,
+  Copy,
   Crown,
   Gift,
+  KeyRound,
   Plus,
   RefreshCw,
   Server,
@@ -16,11 +19,14 @@ import {
   adminIpAction,
   adminListChannels,
   adminListUsers,
+  adminMintResellKeys,
+  adminProbeChannel,
   adminTopupUser,
   adminUpdateUserRole,
   adminUpsertChannel,
   type AdminUserSummary,
   type ChannelItem,
+  type ChannelProbeResp,
   type HealthResp,
   type UserRole,
 } from "../api";
@@ -35,6 +41,23 @@ interface Props {
   onToast: (msg: string) => void;
 }
 
+const PROVIDER_PRESETS = [
+  { key: "cloudflare", label: "Cloudflare AI Gateway / Workers AI", provider: "openai_compat", baseUrl: "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/openai", models: "deepseek-v4.1-flash,gemini-2.5-flash" },
+  { key: "aws", label: "AWS Bedrock (OpenAI 兼容)", provider: "openai_compat", baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1", models: "claude-sonnet-4,deepseek-v4-pro" },
+  { key: "gcp", label: "Google Cloud Vertex AI", provider: "gemini_openai", baseUrl: "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/{project}/locations/us-central1/endpoints/openapi", models: "gemini-2.5-flash,gemini-2.5-pro" },
+  { key: "aistudio", label: "Google AI Studio (Gemini)", provider: "gemini_openai", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", models: "gemini-2.5-flash,gemini-2.5-pro" },
+  { key: "openai", label: "OpenAI 官方", provider: "openai_compat", baseUrl: "https://api.openai.com/v1", models: "gpt-4o,gpt-4.1-mini" },
+  { key: "anthropic", label: "Anthropic 官方", provider: "openai_compat", baseUrl: "https://api.anthropic.com/v1", models: "claude-sonnet-4" },
+  { key: "openrouter", label: "OpenRouter (支持查余额)", provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1", models: "claude-sonnet-4,free:qwen3-8b" },
+  { key: "deepseek", label: "DeepSeek 官方 (支持查余额)", provider: "openai_compat", baseUrl: "https://api.deepseek.com/v1", models: "deepseek-v3,deepseek-v4.1-flash" },
+  { key: "siliconflow", label: "SiliconFlow 硅基流动 (支持查余额)", provider: "openai_compat", baseUrl: "https://api.siliconflow.cn/v1", models: "deepseek-v3,free:qwen3-8b" },
+  { key: "dashscope", label: "阿里云百炼 DashScope", provider: "openai_compat", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", models: "free:qwen3-8b,deepseek-v3" },
+  { key: "volcengine", label: "火山引擎方舟 Volcengine Ark", provider: "openai_compat", baseUrl: "https://ark.cn-beijing.volces.com/api/v3", models: "deepseek-v3,deepseek-v4-pro" },
+  { key: "groq", label: "Groq 高速推理", provider: "openai_compat", baseUrl: "https://api.groq.com/openai/v1", models: "deepseek-v3" },
+  { key: "xai", label: "xAI (Grok)", provider: "openai_compat", baseUrl: "https://api.x.ai/v1", models: "grok-3" },
+  { key: "custom", label: "自定义 OpenAI 兼容中转站", provider: "openai_compat", baseUrl: "https://your-upstream.example.com/v1", models: "*" },
+];
+
 export function AdminConsolePanel({
   section,
   jwt,
@@ -45,16 +68,25 @@ export function AdminConsolePanel({
   onToast,
 }: Props) {
   const [channels, setChannels] = useState<ChannelItem[]>([]);
+  const [probeMap, setProbeMap] = useState<Record<string, ChannelProbeResp>>({});
   const [users, setUsers] = useState<AdminUserSummary[]>([]);
   const [busy, setBusy] = useState(false);
 
-  // Channel form
-  const [chId, setChId] = useState("openrouter-pool-1");
-  const [chName, setChName] = useState("OpenRouter Primary");
-  const [chProvider, setChProvider] = useState("openrouter");
-  const [chBaseUrl, setChBaseUrl] = useState("https://openrouter.ai/api/v1");
+  // Channel form with 14+ provider presets
+  const [presetKey, setPresetKey] = useState("cloudflare");
+  const [chId, setChId] = useState("cloudflare-pool-1");
+  const [chName, setChName] = useState("Cloudflare AI Gateway");
+  const [chProvider, setChProvider] = useState("openai_compat");
+  const [chBaseUrl, setChBaseUrl] = useState(PROVIDER_PRESETS[0].baseUrl);
   const [chKey, setChKey] = useState("");
-  const [chModels, setChModels] = useState("claude-sonnet-4,free:qwen3-8b");
+  const [chModels, setChModels] = useState(PROVIDER_PRESETS[0].models);
+
+  // Resell API Key Batch Minting
+  const [resellCount, setResellCount] = useState("5");
+  const [resellQuota, setResellQuota] = useState("1000");
+  const [resellBatch, setResellBatch] = useState("RESELL-100CNY");
+  const [resellDays, setResellDays] = useState("30");
+  const [resellKeys, setResellKeys] = useState<string[]>([]);
 
   // Risk & Redemptions
   const [targetIp, setTargetIp] = useState("");
@@ -64,6 +96,18 @@ export function AdminConsolePanel({
   const [mintedCodes, setMintedCodes] = useState<string[]>([]);
 
   const hasAuth = isAdminRole || adminKey.trim().length > 0;
+  const origin = typeof window !== "undefined" ? window.location.origin : "https://dev.lain42.top";
+
+  const applyPreset = (key: string) => {
+    setPresetKey(key);
+    const p = PROVIDER_PRESETS.find((x) => x.key === key);
+    if (!p) return;
+    setChId(`${p.key}-pool-1`);
+    setChName(p.label);
+    setChProvider(p.provider);
+    setChBaseUrl(p.baseUrl);
+    setChModels(p.models);
+  };
 
   const loadAll = async () => {
     if (!hasAuth) return;
@@ -110,6 +154,37 @@ export function AdminConsolePanel({
     }
   };
 
+  const handleProbe = async (id: string) => {
+    setBusy(true);
+    try {
+      const res = await adminProbeChannel(jwt, adminKey, id);
+      setProbeMap((prev) => ({ ...prev, [id]: res }));
+      onToast(res.ok ? `渠道 ${id} 在线 (${res.latency_ms}ms) · ${res.balance_text}` : `渠道 ${id} 测活失败 (${res.latency_ms}ms)`);
+    } catch (e) {
+      onToast(`测活失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleMintResell = async () => {
+    setBusy(true);
+    try {
+      const res = await adminMintResellKeys(jwt, adminKey, {
+        count: Math.max(1, Number(resellCount) || 1),
+        quota_credits: Math.max(1, Number(resellQuota) || 100),
+        batch_name: resellBatch.trim() || "RESELL",
+        expires_days: Math.max(0, Number(resellDays) || 0),
+      });
+      setResellKeys(res.keys);
+      onToast(`已批量生成 ${res.count} 张预充值转售 API Key（每张 ${res.quota_credits} 积分）！`);
+    } catch (e) {
+      onToast(`生成失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleRoleChange = async (u: AdminUserSummary, role: UserRole, banned?: boolean) => {
     setBusy(true);
     try {
@@ -137,7 +212,7 @@ export function AdminConsolePanel({
         username,
         credits: 500,
       });
-      onToast(`已为 ${username} 充值 +500 实付积分`);
+      onToast(`已为 ${username} 充值 +500 积分`);
       loadAll();
     } catch (e) {
       onToast(`充值失败：${(e as Error).message}`);
@@ -168,26 +243,28 @@ export function AdminConsolePanel({
         </button>
       </div>
 
-      {/* Section 1: Channels Pool */}
+      {/* Section 1: Channels Pool + Resell API Key Batch Minting */}
       {section === "channels" && (
         <>
           <div className="card">
             <div className="card-header">
               <h3 className="card-title">
-                <Server size={17} color="var(--primary)" /> 新增 / 热更新上游 Key 池渠道
+                <Server size={17} color="var(--primary)" /> 接入第三方供应商（支持 Cloudflare / AWS / Google Cloud / 14+ 预设）
               </h3>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 10 }}>
+              <select className="select" value={presetKey} onChange={(e) => applyPreset(e.target.value)}>
+                {PROVIDER_PRESETS.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
               <input className="input" placeholder="渠道 ID" value={chId} onChange={(e) => setChId(e.target.value)} />
               <input className="input" placeholder="展示名称" value={chName} onChange={(e) => setChName(e.target.value)} />
-              <select className="select" value={chProvider} onChange={(e) => setChProvider(e.target.value)}>
-                <option value="gemini_openai">Google AI Studio (Gemini)</option>
-                <option value="openrouter">OpenRouter</option>
-                <option value="openai_compat">DeepSeek / OpenAI 兼容</option>
-              </select>
-              <input className="input" placeholder="Base URL" value={chBaseUrl} onChange={(e) => setChBaseUrl(e.target.value)} />
+              <input className="input mono" placeholder="Base URL (自动填充，可自定义)" value={chBaseUrl} onChange={(e) => setChBaseUrl(e.target.value)} />
               <input className="input mono" type="password" placeholder="上游 API Key" value={chKey} onChange={(e) => setChKey(e.target.value)} />
-              <input className="input" placeholder="支持模型 (逗号分隔)" value={chModels} onChange={(e) => setChModels(e.target.value)} />
+              <input className="input" placeholder="路由模型 (逗号分隔或 *)" value={chModels} onChange={(e) => setChModels(e.target.value)} />
             </div>
             <button className="btn btn-primary" style={{ marginTop: 12 }} disabled={!hasAuth || busy} onClick={handleSaveChannel}>
               <Plus size={15} /> 热接入上游池
@@ -196,44 +273,67 @@ export function AdminConsolePanel({
 
           <div className="card">
             <div className="card-header">
-              <h3 className="card-title">当前在线渠道池（{channels.length}）</h3>
+              <h3 className="card-title">当前在线渠道池（{channels.length}）· 一键测活与查余额</h3>
             </div>
             <div className="table-wrap">
               <table className="data-table">
                 <thead>
                   <tr>
                     <th>渠道 ID</th>
-                    <th>供应商</th>
                     <th>Base URL</th>
-                    <th>路由模型</th>
+                    <th>测活状态 / 上游余额</th>
                     <th style={{ textAlign: "right" }}>操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {channels.map((c) => (
-                    <tr key={c.id}>
-                      <td className="mono" style={{ fontWeight: 700 }}>{c.id}</td>
-                      <td><span className="pill pill-user">{c.provider}</span></td>
-                      <td className="mono">{c.base_url}</td>
-                      <td style={{ fontSize: 12 }}>{c.meta.models.join(", ")}</td>
-                      <td style={{ textAlign: "right" }}>
-                        <button
-                          className="btn btn-sm btn-danger"
-                          disabled={busy}
-                          onClick={async () => {
-                            await adminDeleteChannel(jwt, adminKey, c.id);
-                            onToast(`已删除渠道 ${c.id}`);
-                            loadAll();
-                          }}
-                        >
-                          <Trash2 size={13} /> 删除
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {channels.map((c) => {
+                    const pr = probeMap[c.id];
+                    return (
+                      <tr key={c.id}>
+                        <td>
+                          <div className="mono" style={{ fontWeight: 700 }}>{c.id}</div>
+                          <div style={{ fontSize: 11.5, color: "var(--text-muted)" }}>{c.meta.models.join(", ")}</div>
+                        </td>
+                        <td className="mono" style={{ fontSize: 12 }}>{c.base_url}</td>
+                        <td>
+                          {pr ? (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                              <span className={`pill ${pr.ok ? "pill-ok" : "pill-danger"}`} style={{ width: "fit-content" }}>
+                                {pr.ok ? `在线 · ${pr.latency_ms}ms · ${pr.models_count} 模型` : `不可达 · ${pr.latency_ms}ms`}
+                              </span>
+                              <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>余额：{pr.balance_text}</span>
+                            </div>
+                          ) : (
+                            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>点击右侧按钮测活 / 查余额</span>
+                          )}
+                        </td>
+                        <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                          <button
+                            className="btn btn-sm"
+                            style={{ marginRight: 6 }}
+                            disabled={busy}
+                            onClick={() => handleProbe(c.id)}
+                          >
+                            <Activity size={13} /> 测活 & 查余额
+                          </button>
+                          <button
+                            className="btn btn-sm btn-danger"
+                            disabled={busy}
+                            onClick={async () => {
+                              await adminDeleteChannel(jwt, adminKey, c.id);
+                              onToast(`已删除渠道 ${c.id}`);
+                              loadAll();
+                            }}
+                          >
+                            <Trash2 size={13} /> 删除
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                   {channels.length === 0 && (
                     <tr>
-                      <td colSpan={5} style={{ textAlign: "center", color: "var(--text-muted)", padding: 24 }}>
+                      <td colSpan={4} style={{ textAlign: "center", color: "var(--text-muted)", padding: 24 }}>
                         {hasAuth ? "暂无动态渠道" : "请先鉴权以查看上游渠道池"}
                       </td>
                     </tr>
@@ -241,6 +341,47 @@ export function AdminConsolePanel({
                 </tbody>
               </table>
             </div>
+          </div>
+
+          {/* Batch Resell API Key Minting Card */}
+          <div className="card">
+            <div className="card-header">
+              <h3 className="card-title">
+                <KeyRound size={17} color="var(--warning)" /> 转售 API Key 批发发卡（买家免注册，即插即用）
+              </h3>
+            </div>
+            <p style={{ marginTop: 0, fontSize: 12.5, color: "var(--text-secondary)" }}>
+              批量签发带独立预充值额度的 <span className="mono">sk-l42-...</span> 转售密钥，可直接上架发卡网 / 闲鱼 / 爱发电；买家拿到即可填入 Cursor / Claude Code / cc-switch 直接调用。
+            </p>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
+              <input className="input" placeholder="生成数量 (1~100)" value={resellCount} onChange={(e) => setResellCount(e.target.value)} />
+              <input className="input" placeholder="单 Key 额度 (积分)" value={resellQuota} onChange={(e) => setResellQuota(e.target.value)} />
+              <input className="input" placeholder="批次名称" value={resellBatch} onChange={(e) => setResellBatch(e.target.value)} />
+              <input className="input" placeholder="有效天数 (0=永久)" value={resellDays} onChange={(e) => setResellDays(e.target.value)} />
+              <button className="btn btn-primary" disabled={!hasAuth || busy} onClick={handleMintResell}>
+                批量签发转售 Key
+              </button>
+            </div>
+            {resellKeys.length > 0 && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 700, color: "var(--success)" }}>
+                    已生成 {resellKeys.length} 张可转售密钥（Base URL: {origin}/relay/v1）
+                  </span>
+                  <button
+                    className="btn btn-sm btn-primary"
+                    onClick={() => {
+                      const csv = resellKeys.map((k) => `${k} | BaseURL: ${origin}/relay/v1 | 额度: ${resellQuota}积分`).join("\n");
+                      navigator.clipboard?.writeText(csv);
+                      onToast("已复制发卡网格式密钥清单！");
+                    }}
+                  >
+                    <Copy size={13} /> 一键复制发卡格式
+                  </button>
+                </div>
+                <div className="code-box">{resellKeys.join("\n")}</div>
+              </div>
+            )}
           </div>
         </>
       )}
@@ -263,7 +404,7 @@ export function AdminConsolePanel({
                   <th>用户名</th>
                   <th>当前角色</th>
                   <th>折扣 / Key 上限</th>
-                  <th>实付余额</th>
+                  <th>可用积分</th>
                   <th>状态</th>
                   <th style={{ textAlign: "right" }}>权限与操作</th>
                 </tr>
@@ -387,7 +528,7 @@ export function AdminConsolePanel({
           <div className="card">
             <div className="card-header">
               <h3 className="card-title">
-                <Gift size={17} color="var(--warning)" /> 批量生成实付兑换码
+                <Gift size={17} color="var(--warning)" /> 批量生成积分兑换码
               </h3>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
@@ -407,7 +548,7 @@ export function AdminConsolePanel({
                     prefix: redPrefix.trim() || "VIP",
                   });
                   setMintedCodes(codes);
-                  onToast(`成功签发 ${codes.length} 张实付兑换码！`);
+                  onToast(`成功签发 ${codes.length} 张积分兑换码！`);
                 } catch (e) {
                   onToast((e as Error).message);
                 }

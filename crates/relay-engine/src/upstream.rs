@@ -1,7 +1,9 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
-use relay_core::{ChannelConfig, ChatReq, ModelConfig, ModelsCatalog, RelayError, TokenUsage};
+use relay_core::{
+    ChannelConfig, ChannelProbeResult, ChatReq, ModelConfig, ModelsCatalog, RelayError, TokenUsage,
+};
 use reqwest::Client;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
@@ -70,6 +72,82 @@ impl UpstreamRouter {
 
     pub fn catalog(&self) -> &ModelsCatalog {
         &self.catalog
+    }
+
+    /// Live probe an upstream channel: measure latency, count `/models`, and query upstream balance.
+    pub async fn probe_channel(&self, ch: &LiveChannel) -> ChannelProbeResult {
+        let base = ch.base_url.trim_end_matches('/');
+        let key = ch.api_key.expose_secret();
+        let t0 = std::time::Instant::now();
+        let models_url = format!("{base}/models");
+        let (ok, models_count) = match self.client.get(&models_url).bearer_auth(key).send().await {
+            Ok(r) if r.status().is_success() => {
+                let cnt = r
+                    .json::<serde_json::Value>()
+                    .await
+                    .ok()
+                    .and_then(|v| v.get("data").and_then(|d| d.as_array()).map(|a| a.len()))
+                    .unwrap_or(0);
+                (true, cnt)
+            }
+            _ => (false, 0),
+        };
+        let latency_ms = t0.elapsed().as_millis() as u64;
+        let balance_text = self.query_upstream_balance(base, &ch.provider, key).await;
+        ChannelProbeResult { ok, latency_ms, models_count, balance_text }
+    }
+
+    async fn query_upstream_balance(&self, base: &str, provider: &str, key: &str) -> String {
+        // 1. OpenRouter: GET /credits -> data.total_credits - data.total_usage
+        if provider == "openrouter" || base.contains("openrouter.ai") {
+            let url = format!("{base}/credits");
+            if let Ok(r) = self.client.get(&url).bearer_auth(key).send().await
+                && r.status().is_success()
+                && let Ok(v) = r.json::<serde_json::Value>().await
+            {
+                let total = v.pointer("/data/total_credits").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                let used = v.pointer("/data/total_usage").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                return format!("${:.4} 可用 (总额 ${:.2})", (total - used).max(0.0), total);
+            }
+        }
+        // 2. DeepSeek Official: GET /user/balance
+        if base.contains("api.deepseek.com") {
+            let root = base.trim_end_matches("/v1");
+            if let Ok(r) = self.client.get(format!("{root}/user/balance")).bearer_auth(key).send().await
+                && r.status().is_success()
+                && let Ok(v) = r.json::<serde_json::Value>().await
+                && let Some(arr) = v.get("balance_infos").and_then(|x| x.as_array())
+                && let Some(first) = arr.first()
+            {
+                let cur = first.get("currency").and_then(|x| x.as_str()).unwrap_or("CNY");
+                let bal = first.get("total_balance").and_then(|x| x.as_str()).unwrap_or("0");
+                return format!("{bal} {cur}");
+            }
+        }
+        // 3. SiliconFlow: GET /user/info
+        if base.contains("siliconflow")
+            && let Ok(r) = self.client.get(format!("{base}/user/info")).bearer_auth(key).send().await
+            && r.status().is_success()
+            && let Ok(v) = r.json::<serde_json::Value>().await
+            && let Some(bal) = v.pointer("/data/totalBalance").and_then(|x| x.as_str())
+        {
+            return format!("¥{bal} CNY");
+        }
+        // 4. Generic OpenAI / New-API compatible: /dashboard/billing/credit_grants
+        let root = base.trim_end_matches("/v1");
+        if let Ok(r) = self
+            .client
+            .get(format!("{root}/v1/dashboard/billing/credit_grants"))
+            .bearer_auth(key)
+            .send()
+            .await
+            && r.status().is_success()
+            && let Ok(v) = r.json::<serde_json::Value>().await
+            && let Some(avail) = v.get("total_available").and_then(|x| x.as_f64())
+        {
+            return format!("${avail:.4} 可用");
+        }
+        "该上游未开放余额接口（已测通）".to_string()
     }
 
     fn is_cooled(&self, channel_id: &str) -> bool {

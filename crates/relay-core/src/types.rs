@@ -388,6 +388,26 @@ pub struct ActivateTrialReq {
     pub card_id: String,
 }
 
+/// Batch pre-funded resell API key minting request (<= 4 fields, deny_unknown_fields).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResellKeyBatchReq {
+    pub count: u32,
+    pub quota_credits: u64,
+    pub batch_name: String,
+    #[serde(default)]
+    pub expires_days: u32,
+}
+
+/// Upstream channel live probe & balance result (<= 4 fields).
+#[derive(Debug, Clone, Serialize)]
+pub struct ChannelProbeResult {
+    pub ok: bool,
+    pub latency_ms: u64,
+    pub models_count: usize,
+    pub balance_text: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

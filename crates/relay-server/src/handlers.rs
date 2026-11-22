@@ -11,7 +11,8 @@ use futures_util::StreamExt;
 use relay_core::{
     ActivateTrialReq, AdminRoleUpdateReq, AnthropicMsgReq, ChannelUpsertReq, ChatReq, ClientIp,
     EmbeddingReq, ImageGenReq, KeyIssueReq, PortalAuthReq, PricingRate, RedeemCodeReq,
-    RedemptionCreateReq, RelayError, RerankReq, TokenUsage, UserRole, UserRolePolicy,
+    RedemptionCreateReq, RelayError, RerankReq, ResellKeyBatchReq, TokenUsage, UserRole,
+    UserRolePolicy,
 };
 use relay_engine::{HoldReceipt, UpstreamReply};
 use serde::Deserialize;
@@ -778,6 +779,40 @@ pub async fn api_admin_delete_channel(
     }
     match st.ledger.delete_channel(&id).await {
         Ok(()) => Json(json!({ "ok": true, "deleted": id })).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_admin_probe_channel(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(e) = verify_admin_access(&st, &headers).await {
+        return st.err_response(&headers, e);
+    }
+    match st.ledger.get_live_channel(&id).await {
+        Ok(ch) => Json(st.router.probe_channel(&ch).await).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_admin_mint_resell_keys(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<ResellKeyBatchReq>,
+) -> Response {
+    if let Err(e) = verify_admin_access(&st, &headers).await {
+        return st.err_response(&headers, e);
+    }
+    match st.ledger.mint_resell_key_batch(&req).await {
+        Ok(keys) => Json(json!({
+            "ok": true,
+            "count": keys.len(),
+            "quota_credits": req.quota_credits,
+            "keys": keys
+        }))
+        .into_response(),
         Err(e) => st.err_response(&headers, e),
     }
 }

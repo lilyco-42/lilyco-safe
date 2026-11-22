@@ -384,6 +384,40 @@ export async function adminDeleteChannel(jwt: string, adminKey: string, id: stri
   );
 }
 
+export interface ChannelProbeResp {
+  ok: boolean;
+  latency_ms: number;
+  models_count: number;
+  balance_text: string;
+}
+
+export async function adminProbeChannel(
+  jwt: string,
+  adminKey: string,
+  id: string,
+): Promise<ChannelProbeResp> {
+  return parseJson(
+    await fetch(`${API_BASE}/api/v1/admin/channels/${encodeURIComponent(id)}/probe`, {
+      method: "POST",
+      headers: adminHeaders(jwt, adminKey),
+    }),
+  );
+}
+
+export async function adminMintResellKeys(
+  jwt: string,
+  adminKey: string,
+  payload: { count: number; quota_credits: number; batch_name: string; expires_days: number },
+): Promise<{ count: number; quota_credits: number; keys: string[] }> {
+  return parseJson(
+    await fetch(`${API_BASE}/api/v1/admin/resell/keys`, {
+      method: "POST",
+      headers: adminHeaders(jwt, adminKey),
+      body: JSON.stringify(payload),
+    }),
+  );
+}
+
 export async function adminListUsers(jwt: string, adminKey: string): Promise<AdminUserSummary[]> {
   const d = await parseJson<{ users: AdminUserSummary[] }>(
     await fetch(`${API_BASE}/api/v1/admin/users`, { headers: adminHeaders(jwt, adminKey) }),

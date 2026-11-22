@@ -30,6 +30,28 @@ pub enum RelayKeys {
     Active,
 }
 
+#[derive(Iden)]
+pub enum RelayChannels {
+    Table,
+    Id,
+    Provider,
+    BaseUrl,
+    ApiKey,
+}
+
+pub fn sql_get_channel_by_id() -> String {
+    Query::select()
+        .columns([
+            RelayChannels::Id,
+            RelayChannels::Provider,
+            RelayChannels::BaseUrl,
+            RelayChannels::ApiKey,
+        ])
+        .from(RelayChannels::Table)
+        .and_where(Expr::col(RelayChannels::Id).eq(Expr::cust("?1")))
+        .to_string(SqliteQueryBuilder)
+}
+
 pub fn sql_get_user_role() -> String {
     Query::select()
         .columns([RelayUserRoles::Role, RelayUserRoles::DiscountPct, RelayUserRoles::Banned])

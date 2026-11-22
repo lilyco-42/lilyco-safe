@@ -51,6 +51,8 @@ pub fn build_app(state: AppState) -> Router {
         .route("/api/v1/affiliate/transfer", post(handlers::api_affiliate_transfer))
         .route("/api/v1/admin/channels", get(handlers::api_admin_list_channels).post(handlers::api_admin_upsert_channel))
         .route("/api/v1/admin/channels/{id}", delete(handlers::api_admin_delete_channel))
+        .route("/api/v1/admin/channels/{id}/probe", post(handlers::api_admin_probe_channel))
+        .route("/api/v1/admin/resell/keys", post(handlers::api_admin_mint_resell_keys))
         .route("/api/v1/admin/users", get(handlers::api_admin_list_users))
         .route("/api/v1/admin/users/role", post(handlers::api_admin_update_role))
         .route("/api/v1/admin/redemptions", post(handlers::api_admin_create_redemptions))
