@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   Bot,
   Coins,
+  Command as CommandIcon,
   Crown,
   History,
   KeyRound,
@@ -15,6 +16,7 @@ import {
   Sun,
   UserCog,
 } from "lucide-react";
+import { Toaster, toast as sonnerToast } from "sonner";
 import {
   fetchDashboardStats,
   fetchHealth,
@@ -33,6 +35,7 @@ import { TokensPanel } from "./components/TokensPanel";
 import { ChatPanel } from "./components/ChatPanel";
 import { WalletLogsPanel } from "./components/WalletLogsPanel";
 import { AdminConsolePanel } from "./components/AdminConsolePanel";
+import { CommandPalette } from "./components/CommandPalette";
 
 type NavId =
   | "dashboard"
@@ -77,11 +80,11 @@ export function App() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
-  const [toast, setToast] = useState<string>("");
+  const [cmdOpen, setCmdOpen] = useState(false);
 
   const showToast = useCallback((msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast((cur) => (cur === msg ? "" : cur)), 3200);
+    if (msg.includes("失败")) sonnerToast.error(msg);
+    else sonnerToast.success(msg);
   }, []);
 
   useEffect(() => {
@@ -228,6 +231,9 @@ export function App() {
           </div>
 
           <div className="topbar-right">
+            <button className="btn btn-sm" onClick={() => setCmdOpen(true)} title="快捷命令面板">
+              <CommandIcon size={13} /> 快捷搜索 <kbd style={{ fontSize: 10.5, opacity: 0.7 }}>⌘K</kbd>
+            </button>
             <span className={`pill pill-${role}`}>
               {role === "vip" && <Crown size={12} />}
               {role === "admin"
@@ -377,7 +383,19 @@ export function App() {
         </div>
       )}
 
-      {toast && <div className="toast">{toast}</div>}
+      <Toaster richColors position="bottom-right" theme={theme} />
+      <CommandPalette
+        open={cmdOpen}
+        onOpenChange={setCmdOpen}
+        models={models}
+        onNavigate={(id) => setNav(id as NavId)}
+        onTestModel={(id) => {
+          setSelectedModel(id);
+          setNav("chat");
+        }}
+        onToggleTheme={() => setTheme(theme === "light" ? "dark" : "light")}
+        theme={theme}
+      />
     </div>
   );
 }

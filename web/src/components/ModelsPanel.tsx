@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Copy, Play, Search, Sparkles } from "lucide-react";
 import type { ModelItem } from "../api";
+import { ModelIcon } from "./ModelIcon";
 
 interface Props {
   models: ModelItem[];
@@ -91,7 +92,10 @@ export function ModelsPanel({ models, discountPct, onTestModel, onToast }: Props
             {filtered.map((m) => (
               <tr key={m.id}>
                 <td>
-                  <span className="mono" style={{ fontWeight: 700 }}>{m.id}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                    <ModelIcon modelId={m.id} size={20} />
+                    <span className="mono" style={{ fontWeight: 700 }}>{m.id}</span>
+                  </div>
                 </td>
                 <td>
                   <span className="pill pill-guest">{m.owned_by}</span>
