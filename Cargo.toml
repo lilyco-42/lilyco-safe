@@ -5,6 +5,9 @@ members = [
     "crates/relay-risk",
     "crates/relay-engine",
     "crates/relay-server",
+    "bins/relay-proxy",
+    "bins/relay-admin",
+    "bins/relay-worker",
 ]
 
 [workspace.package]

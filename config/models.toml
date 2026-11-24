@@ -9,6 +9,14 @@ weight = 100
 enabled = true
 
 [[channels]]
+id = "gemini-aistudio-free"
+provider = "gemini_openai"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+api_key_env = "GEMINI_FREE_API_KEY"
+weight = 95
+enabled = true
+
+[[channels]]
 id = "openrouter-main"
 provider = "openrouter"
 base_url = "https://openrouter.ai/api/v1"
@@ -22,6 +30,46 @@ provider = "openai_compat"
 base_url = "https://api.lain42.top/v1"
 api_key_env = "DEEPSEEK_API_KEY"
 weight = 85
+enabled = true
+
+[[channels]]
+id = "groq-free"
+provider = "openai_compat"
+base_url = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY"
+weight = 80
+enabled = true
+
+[[channels]]
+id = "cerebras-free"
+provider = "openai_compat"
+base_url = "https://api.cerebras.ai/v1"
+api_key_env = "CEREBRAS_API_KEY"
+weight = 80
+enabled = true
+
+[[channels]]
+id = "nvidia-nim"
+provider = "openai_compat"
+base_url = "https://integrate.api.nvidia.com/v1"
+api_key_env = "NVIDIA_NIM_API_KEY"
+weight = 78
+enabled = true
+
+[[channels]]
+id = "siliconflow-cn"
+provider = "openai_compat"
+base_url = "https://api.siliconflow.cn/v1"
+api_key_env = "SILICONFLOW_API_KEY"
+weight = 82
+enabled = true
+
+[[channels]]
+id = "github-models"
+provider = "openai_compat"
+base_url = "https://models.inference.ai.azure.com"
+api_key_env = "GITHUB_MODELS_TOKEN"
+weight = 75
 enabled = true
 
 # === 国内极速直连（DeepSeek / Kimi / GLM / 免费） ===
@@ -134,16 +182,40 @@ allow_free = false
 
 [[models]]
 id = "free:gemma-4-31b"
-channel_id = "openrouter-main"
-upstream_model = "google/gemma-4-31b-it:free"
+channel_id = "gemini-aistudio-free"
+upstream_model = "gemma-4-31b-it"
 input_per_m = 0
 output_per_m = 0
 allow_free = true
 
 [[models]]
 id = "free:gemma-4-26b"
-channel_id = "openrouter-main"
-upstream_model = "google/gemma-4-26b-a4b-it:free"
+channel_id = "gemini-aistudio-free"
+upstream_model = "gemma-4-26b-a4b-it"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+[[models]]
+id = "free:gemini-3.5-flash-lite"
+channel_id = "gemini-aistudio-free"
+upstream_model = "gemini-3.5-flash-lite"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+[[models]]
+id = "free:gemini-3.1-flash-lite"
+channel_id = "gemini-aistudio-free"
+upstream_model = "gemini-3.1-flash-lite"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+[[models]]
+id = "free:gemini-2.5-flash"
+channel_id = "gemini-aistudio-free"
+upstream_model = "gemini-2.5-flash"
 input_per_m = 0
 output_per_m = 0
 allow_free = true
@@ -203,7 +275,107 @@ allow_free = false
 [[models]]
 id = "free:qwen3-8b"
 channel_id = "openrouter-main"
-upstream_model = "qwen/qwen3-8b:free"
+upstream_model = "baidu/ernie-5.5-flash-preview:free"
 input_per_m = 0
 output_per_m = 0
 allow_free = true
+
+[[models]]
+id = "free:ernie-5.5-flash"
+channel_id = "openrouter-main"
+upstream_model = "baidu/ernie-5.5-flash-preview:free"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+[[models]]
+id = "free:nemotron-ultra-550b"
+channel_id = "openrouter-main"
+upstream_model = "nvidia/nemotron-3-ultra-550b-a55b:free"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+# === 多平台高额免费池（Groq / Cerebras / NVIDIA NIM / SiliconFlow / GitHub Models） ===
+
+[[models]]
+id = "free:groq-llama-3.3-70b"
+channel_id = "groq-free"
+upstream_model = "llama-3.3-70b-versatile"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+[[models]]
+id = "free:cerebras-llama-3.3-70b"
+channel_id = "cerebras-free"
+upstream_model = "gpt-oss-120b"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+[[models]]
+id = "free:cerebras-qwen-3.8-27b"
+channel_id = "cerebras-free"
+upstream_model = "qwen-3.8-27b"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+[[models]]
+id = "free:nim-llama-3.3-70b"
+channel_id = "nvidia-nim"
+upstream_model = "z-ai/glm-5.3-flash"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+[[models]]
+id = "free:nim-deepseek-r1"
+channel_id = "nvidia-nim"
+upstream_model = "nvidia/nemotron-3-ultra-550b-a55b"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+[[models]]
+id = "free:sf-qwen2.5-7b"
+channel_id = "siliconflow-cn"
+upstream_model = "Qwen/Qwen2.5-7B-Instruct"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+[[models]]
+id = "free:github-gpt-4o-mini"
+channel_id = "github-models"
+upstream_model = "gpt-4o-mini"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+[[models]]
+id = "free:github-deepseek-r1"
+channel_id = "github-models"
+upstream_model = "DeepSeek-R1"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+# === AI 生图模型（SiliconFlow 免费 FLUX.1-schnell + Google Imagen 3） ===
+
+[[models]]
+id = "free:flux-1-schnell"
+channel_id = "siliconflow-cn"
+upstream_model = "Kwai-Kolors/Kolors"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+[[models]]
+id = "imagen-3.0-generate-002"
+channel_id = "gemini-aistudio"
+upstream_model = "imagen-3.0-generate-002"
+input_per_m = 40
+output_per_m = 40
+allow_free = false

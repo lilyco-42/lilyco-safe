@@ -26,12 +26,110 @@ impl ClientIp {
     }
 }
 
+/// Strongly-typed image URL part for OpenAI-compatible multimodal chat (1 field, deny_unknown_fields).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageUrlPart {
+    pub url: String,
+}
+
+/// Strongly-typed multimodal content part (text or image_url).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentPart {
+    Text { text: String },
+    ImageUrl { image_url: ImageUrlPart },
+}
+
+/// Strongly-typed chat message content supporting plain text or multimodal vision parts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ChatContent {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
+impl ChatContent {
+    pub fn validate(&self) -> Result<(), RelayError> {
+        match self {
+            Self::Text(s) => {
+                if s.len() > 200_000 {
+                    return Err(RelayError::InvalidInput("message text exceeds limit".into()));
+                }
+                Ok(())
+            }
+            Self::Parts(parts) => {
+                if parts.is_empty() || parts.len() > 12 {
+                    return Err(RelayError::InvalidInput("message parts must be 1..12 items".into()));
+                }
+                let mut img_count = 0usize;
+                for part in parts {
+                    match part {
+                        ContentPart::Text { text } if text.len() > 200_000 => {
+                            return Err(RelayError::InvalidInput("text part exceeds limit".into()));
+                        }
+                        ContentPart::ImageUrl { image_url } => {
+                            img_count += 1;
+                            if img_count > 4 {
+                                return Err(RelayError::InvalidInput("at most 4 images per message".into()));
+                            }
+                            let u = image_url.url.trim();
+                            let valid_scheme = u.starts_with("https://")
+                                || u.starts_with("data:image/png;base64,")
+                                || u.starts_with("data:image/jpeg;base64,")
+                                || u.starts_with("data:image/jpg;base64,")
+                                || u.starts_with("data:image/webp;base64,")
+                                || u.starts_with("data:image/gif;base64,");
+                            if !valid_scheme || u.len() > 8_000_000 {
+                                return Err(RelayError::InvalidInput(
+                                    "image_url must be https:// or base64 data:image/* under 6MB".into(),
+                                ));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub fn char_len(&self) -> usize {
+        match self {
+            Self::Text(s) => s.len(),
+            Self::Parts(parts) => parts
+                .iter()
+                .map(|p| match p {
+                    ContentPart::Text { text } => text.len(),
+                    ContentPart::ImageUrl { .. } => 1024,
+                })
+                .sum(),
+        }
+    }
+
+    pub fn has_images(&self) -> bool {
+        matches!(self, Self::Parts(parts) if parts.iter().any(|p| matches!(p, ContentPart::ImageUrl { .. })))
+    }
+}
+
+impl From<String> for ChatContent {
+    fn from(value: String) -> Self {
+        Self::Text(value)
+    }
+}
+
+impl From<&str> for ChatContent {
+    fn from(value: &str) -> Self {
+        Self::Text(value.to_string())
+    }
+}
+
 /// Strictly typed chat message (<= 4 fields, deny_unknown_fields).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChatMessage {
     pub role: String,
-    pub content: String,
+    pub content: ChatContent,
 }
 
 /// Strictly typed OpenAI `/v1/chat/completions` request (4 fields, deny_unknown_fields).
@@ -59,12 +157,13 @@ impl ChatReq {
             if !valid_role {
                 return Err(RelayError::InvalidInput(format!("unsupported role: {}", m.role)));
             }
+            m.content.validate()?;
         }
         Ok(())
     }
 
     pub fn estimate_prompt_tokens(&self) -> u64 {
-        let chars: usize = self.messages.iter().map(|m| m.content.len()).sum();
+        let chars: usize = self.messages.iter().map(|m| m.content.char_len()).sum();
         ((chars / 3).max(8)) as u64
     }
 }

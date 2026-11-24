@@ -679,9 +679,12 @@ impl RelayLedger {
         while let Some(row) = rows.next().await.map_err(map_db)? {
             let models_csv = col_str(&row, 4);
             let matched = models_csv.trim().is_empty()
-                || models_csv
-                    .split(',')
-                    .any(|m| m.trim() == "*" || m.trim() == model_id);
+                || models_csv.split(',').any(|m| {
+                    let p = m.trim();
+                    p == "*"
+                        || p == model_id
+                        || p.strip_suffix('*').is_some_and(|pre| model_id.starts_with(pre))
+                });
             let api_key = col_str(&row, 3);
             if matched && !api_key.is_empty() {
                 out.push(LiveChannel {

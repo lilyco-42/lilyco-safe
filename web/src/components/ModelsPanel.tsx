@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Copy, Play, Search, Sparkles } from "lucide-react";
 import type { ModelItem } from "../api";
 import { ModelIcon } from "./ModelIcon";
+import { ModelCompanyCards } from "./ModelCompanyCards";
 
 interface Props {
   models: ModelItem[];
@@ -10,23 +11,57 @@ interface Props {
   onToast: (msg: string) => void;
 }
 
+const CURATED_IDS = new Set([
+  "free:gemma-4-31b",
+  "free:gemma-4-26b",
+  "free:gemini-3.5-flash-lite",
+  "free:gemini-3.1-flash-lite",
+  "free:gemini-2.5-flash",
+  "free:cerebras-llama-3.3-70b",
+  "free:sf-qwen2.5-7b",
+  "free:flux-1-schnell",
+  "free:nim-deepseek-r1",
+  "free:nim-llama-3.3-70b",
+  "free:moonshotai/kimi-k3.1-pro",
+  "free:github-gpt-4o-mini",
+  "free:nemotron-lightning",
+  "free:ernie-5.5-flash",
+  "deepseek-v4.1-flash",
+  "deepseek-v4-pro",
+  "kimi-k3.1-pro",
+  "glm-5.3",
+  "gemini-3.8-flash",
+  "gemini-2.5-pro",
+  "gemini-2.5-flash",
+  "claude-sonnet-5.5",
+  "gpt-6.2-astra",
+]);
+
 const PROVIDERS = [
+  { id: "featured", label: "⭐ 精选常用" },
+  { id: "free", label: "🎁 免费额度" },
   { id: "all", label: "全部模型" },
-  { id: "deepseek-official", label: "DeepSeek / Kimi / GLM" },
+  { id: "gemini-aistudio-free", label: "AI Studio 免费池" },
   { id: "gemini-aistudio", label: "Google Gemini" },
-  { id: "openrouter-main", label: "Claude / OpenRouter" },
-  { id: "free", label: "免费体验" },
+  { id: "deepseek-official", label: "DeepSeek / 国产" },
+  { id: "nvidia-nim-free", label: "NVIDIA NIM" },
+  { id: "siliconflow-cn", label: "SiliconFlow" },
+  { id: "cerebras-free", label: "Cerebras" },
+  { id: "openrouter-main", label: "OpenRouter" },
 ];
 
 export function ModelsPanel({ models, discountPct, onTestModel, onToast }: Props) {
+  const [view, setView] = useState<"companies" | "table">("companies");
   const [query, setQuery] = useState("");
-  const [provider, setProvider] = useState("all");
+  const [provider, setProvider] = useState("featured");
 
   const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
     return models.filter((m) => {
+      if (q) return m.id.toLowerCase().includes(q) || m.owned_by.toLowerCase().includes(q);
+      if (provider === "featured") return CURATED_IDS.has(m.id);
       if (provider === "free" && !m.allow_free) return false;
-      if (provider !== "all" && provider !== "free" && m.owned_by !== provider) return false;
-      if (query.trim() && !m.id.toLowerCase().includes(query.trim().toLowerCase())) return false;
+      if (provider !== "all" && provider !== "free" && !m.owned_by.includes(provider.replace("-main", "").replace("-free", ""))) return false;
       return true;
     });
   }, [models, provider, query]);
@@ -35,6 +70,20 @@ export function ModelsPanel({ models, discountPct, onTestModel, onToast }: Props
     if (v === 0 || discountPct <= 0) return v;
     return Math.max(1, Math.ceil((v * (100 - discountPct)) / 100));
   };
+
+  if (view === "companies") {
+    return (
+      <section className="card">
+        <div className="card-header">
+          <h3 className="card-title"><Sparkles size={17} /> 按公司选模型</h3>
+          <button className="btn btn-sm" type="button" onClick={() => setView("table")}>
+            全部模型与费率
+          </button>
+        </div>
+        <ModelCompanyCards onPick={onTestModel} textOnly={false} />
+      </section>
+    );
+  }
 
   return (
     <div className="card">
@@ -52,7 +101,9 @@ export function ModelsPanel({ models, discountPct, onTestModel, onToast }: Props
             )}
           </div>
         </div>
-        <div style={{ position: "relative", width: 260 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button className="btn btn-sm" type="button" onClick={() => setView("companies")}>公司卡片</button>
+          <div style={{ position: "relative", width: 260 }}>
           <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: "var(--text-muted)" }} />
           <input
             className="input"
@@ -61,7 +112,33 @@ export function ModelsPanel({ models, discountPct, onTestModel, onToast }: Props
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
+          </div>
         </div>
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          flexWrap: "wrap",
+          padding: "10px 14px",
+          marginBottom: 14,
+          borderRadius: 10,
+          background: "var(--success-soft)",
+          border: "1px solid var(--success)",
+          fontSize: 12.5,
+        }}
+      >
+        <div>
+          <b style={{ color: "var(--success)" }}>Google AI Studio 免费额度已接入</b>：
+          <span className="mono">free:gemma-4-31b / free:gemma-4-26b</span>（30 RPM · 14.4K 次/天），
+          <span className="mono">free:gemini-3.5-flash-lite / free:gemini-3.1-flash-lite</span>（15 RPM · 250K TPM · 500 次/天），0 积分即可开聊。
+        </div>
+        <button className="btn btn-sm btn-primary" onClick={() => setProvider("free")}>
+          只看免费模型 ({models.filter((m) => m.allow_free).length})
+        </button>
       </div>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>

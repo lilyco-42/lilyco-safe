@@ -21,6 +21,7 @@ import {
   adminListUsers,
   adminMintResellKeys,
   adminProbeChannel,
+  adminSyncModels,
   adminTopupUser,
   adminUpdateUserRole,
   adminUpsertChannel,
@@ -45,15 +46,17 @@ const PROVIDER_PRESETS = [
   { key: "cloudflare", label: "Cloudflare AI Gateway / Workers AI", provider: "openai_compat", baseUrl: "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/openai", models: "deepseek-v4.1-flash,gemini-2.5-flash" },
   { key: "aws", label: "AWS Bedrock (OpenAI 兼容)", provider: "openai_compat", baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1", models: "claude-sonnet-4,deepseek-v4-pro" },
   { key: "gcp", label: "Google Cloud Vertex AI", provider: "gemini_openai", baseUrl: "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/{project}/locations/us-central1/endpoints/openapi", models: "gemini-2.5-flash,gemini-2.5-pro" },
-  { key: "aistudio", label: "Google AI Studio (Gemini)", provider: "gemini_openai", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", models: "gemini-2.5-flash,gemini-2.5-pro" },
+  { key: "aistudio", label: "Google AI Studio (Tier 1 $10 / Imagen 3)", provider: "gemini_openai", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", models: "gemini-3.8-flash,gemini-2.5-flash,gemini-2.5-pro,imagen-3.0-generate-002" },
+  { key: "aistudio_free", label: "Google AI Studio 免费池 (14.4K RPD)", provider: "gemini_openai", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", models: "free:gemma-4-31b,free:gemma-4-26b,free:gemini-3.5-flash-lite,free:gemini-3.1-flash-lite" },
+  { key: "openrouter", label: "OpenRouter (支持查余额 + 免费池)", provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1", models: "claude-sonnet-5.5,gpt-6.2-astra,free:qwen3-8b" },
+  { key: "groq", label: "Groq 免费高速推理", provider: "openai_compat", baseUrl: "https://api.groq.com/openai/v1", models: "free:groq-llama-3.3-70b" },
+  { key: "cerebras", label: "Cerebras 免费极速推理", provider: "openai_compat", baseUrl: "https://api.cerebras.ai/v1", models: "free:cerebras-llama-3.3-70b" },
+  { key: "nvidia_nim", label: "NVIDIA NIM 免费推理", provider: "openai_compat", baseUrl: "https://integrate.api.nvidia.com/v1", models: "free:nim-llama-3.3-70b,free:nim-deepseek-r1" },
+  { key: "siliconflow", label: "SiliconFlow 硅基流动 (免费生图 FLUX + 查余额)", provider: "openai_compat", baseUrl: "https://api.siliconflow.cn/v1", models: "free:sf-qwen2.5-7b,free:flux-1-schnell" },
+  { key: "github_models", label: "GitHub Models 免费推理", provider: "openai_compat", baseUrl: "https://models.inference.ai.azure.com", models: "free:github-gpt-4o-mini,free:github-deepseek-r1" },
   { key: "openai", label: "OpenAI 官方", provider: "openai_compat", baseUrl: "https://api.openai.com/v1", models: "gpt-4o,gpt-4.1-mini" },
   { key: "anthropic", label: "Anthropic 官方", provider: "openai_compat", baseUrl: "https://api.anthropic.com/v1", models: "claude-sonnet-4" },
-  { key: "openrouter", label: "OpenRouter (支持查余额)", provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1", models: "claude-sonnet-4,free:qwen3-8b" },
   { key: "deepseek", label: "DeepSeek 官方 (支持查余额)", provider: "openai_compat", baseUrl: "https://api.deepseek.com/v1", models: "deepseek-v3,deepseek-v4.1-flash" },
-  { key: "siliconflow", label: "SiliconFlow 硅基流动 (支持查余额)", provider: "openai_compat", baseUrl: "https://api.siliconflow.cn/v1", models: "deepseek-v3,free:qwen3-8b" },
-  { key: "dashscope", label: "阿里云百炼 DashScope", provider: "openai_compat", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", models: "free:qwen3-8b,deepseek-v3" },
-  { key: "volcengine", label: "火山引擎方舟 Volcengine Ark", provider: "openai_compat", baseUrl: "https://ark.cn-beijing.volces.com/api/v3", models: "deepseek-v3,deepseek-v4-pro" },
-  { key: "groq", label: "Groq 高速推理", provider: "openai_compat", baseUrl: "https://api.groq.com/openai/v1", models: "deepseek-v3" },
   { key: "xai", label: "xAI (Grok)", provider: "openai_compat", baseUrl: "https://api.x.ai/v1", models: "grok-3" },
   { key: "custom", label: "自定义 OpenAI 兼容中转站", provider: "openai_compat", baseUrl: "https://your-upstream.example.com/v1", models: "*" },
 ];
@@ -273,7 +276,24 @@ export function AdminConsolePanel({
 
           <div className="card">
             <div className="card-header">
-              <h3 className="card-title">当前在线渠道池（{channels.length}）· 一键测活与查余额</h3>
+              <h3 className="card-title">当前在线渠道池（{channels.length}）· 一键测活与动态拉取模型</h3>
+              <button
+                className="btn btn-sm btn-primary"
+                disabled={!hasAuth || busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    const r = await adminSyncModels(jwt, adminKey);
+                    onToast(`动态同步完成：${r.synced_channels} 个渠道，新增 ${r.added_models} 个模型（总计 ${r.total_models}）`);
+                  } catch (e) {
+                    onToast(`同步失败：${(e as Error).message}`);
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                <RefreshCw size={13} /> 动态同步上游模型
+              </button>
             </div>
             <div className="table-wrap">
               <table className="data-table">

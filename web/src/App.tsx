@@ -4,8 +4,11 @@ import {
   Coins,
   Command as CommandIcon,
   Crown,
+  Globe,
   History,
+  Image as ImageIcon,
   KeyRound,
+  Layers,
   LayoutDashboard,
   LogIn,
   LogOut,
@@ -33,6 +36,9 @@ import { DashboardPanel } from "./components/DashboardPanel";
 import { ModelsPanel } from "./components/ModelsPanel";
 import { TokensPanel } from "./components/TokensPanel";
 import { ChatPanel } from "./components/ChatPanel";
+import { ImageStudioPanel } from "./components/ImageStudioPanel";
+import { BrowserAgentPanel } from "./components/BrowserAgentPanel";
+import { WorkflowHubPanel } from "./components/WorkflowHubPanel";
 import { WalletLogsPanel } from "./components/WalletLogsPanel";
 import { AdminConsolePanel } from "./components/AdminConsolePanel";
 import { CommandPalette } from "./components/CommandPalette";
@@ -41,6 +47,9 @@ type NavId =
   | "dashboard"
   | "models"
   | "chat"
+  | "images"
+  | "workflows"
+  | "browser"
   | "tokens"
   | "wallet"
   | "logs"
@@ -52,6 +61,9 @@ const PAGE_TITLES: Record<NavId, string> = {
   dashboard: "数据看板与权限概览",
   models: "模型广场与费率",
   chat: "在线对话演练场",
+  images: "AI 头像 & 我的世界 YSM 创作工坊",
+  workflows: "商业化 AI 创作工作流中心",
+  browser: "AI 浏览器助手 (ego-lite)",
   tokens: "API 令牌与客户端接入",
   wallet: "钱包、充值与推广返佣",
   logs: "调用与计费日志",
@@ -65,7 +77,9 @@ export function App() {
   const [theme, setTheme] = useState<"light" | "dark">(
     () => (localStorage.getItem("lilyco-theme") as "light" | "dark") || "light",
   );
-  const [jwt, setJwt] = useState<string>(() => localStorage.getItem("wb-token") || "");
+  const [jwt, setJwt] = useState<string>(
+    () => localStorage.getItem("lain42_studio_token") || localStorage.getItem("wb-token") || "",
+  );
   const [adminKey, setAdminKey] = useState<string>(() => localStorage.getItem("lilyco-admin-key") || "");
   const [activeSecret, setActiveSecretState] = useState<string>(
     () => localStorage.getItem("lilyco-active-api-key") || "",
@@ -128,6 +142,7 @@ export function App() {
     setAuthBusy(true);
     try {
       const res = await portalAuth(authMode, username.trim(), password);
+      localStorage.setItem("lain42_studio_token", res.token);
       localStorage.setItem("wb-token", res.token);
       setJwt(res.token);
       setAuthModal(false);
@@ -141,6 +156,7 @@ export function App() {
   };
 
   const handleLogout = () => {
+    localStorage.removeItem("lain42_studio_token");
     localStorage.removeItem("wb-token");
     setJwt("");
     setMe(null);
@@ -176,6 +192,18 @@ export function App() {
             </button>
             <button className={`nav-item ${nav === "chat" ? "active" : ""}`} onClick={() => setNav("chat")}>
               <Bot size={16} /> 对话演练场
+            </button>
+            <button className={`nav-item ${nav === "images" ? "active" : ""}`} onClick={() => setNav("images")}>
+              <ImageIcon size={16} /> 头像 & YSM
+              <span className="nav-badge">热门</span>
+            </button>
+            <button className={`nav-item ${nav === "workflows" ? "active" : ""}`} onClick={() => setNav("workflows")}>
+              <Layers size={16} /> 创作工作流
+              <span className="nav-badge">PRO</span>
+            </button>
+            <button className={`nav-item ${nav === "browser" ? "active" : ""}`} onClick={() => setNav("browser")}>
+              <Globe size={16} /> 浏览器助手
+              <span className="nav-badge">ego</span>
             </button>
           </div>
 
@@ -322,6 +350,26 @@ export function App() {
               onOpenAuth={() => setAuthModal(true)}
               onToast={showToast}
             />
+          )}
+          {nav === "images" && (
+            <ImageStudioPanel
+              models={models}
+              apiKey={activeSecret}
+              onApiKeyChange={setActiveSecret}
+              onAfterGenerate={refreshAll}
+              onToast={showToast}
+            />
+          )}
+          {nav === "workflows" && (
+            <WorkflowHubPanel
+              apiKey={activeSecret}
+              onApiKeyChange={setActiveSecret}
+              onAfterRun={refreshAll}
+              onToast={showToast}
+            />
+          )}
+          {nav === "browser" && (
+            <BrowserAgentPanel apiKey={activeSecret} onToast={showToast} />
           )}
           {(nav === "wallet" || nav === "logs") && (
             <WalletLogsPanel

@@ -42,11 +42,12 @@ struct OpenAiResp {
     usage: Option<OpenAiUsage>,
 }
 
-/// Multi-upstream router with lock-free DashMap circuit-breaker cooldown (3 fields, <= 4).
+/// Multi-upstream router with lock-free DashMap circuit-breaker & dynamic model cache (4 fields, Rule of 4).
 pub struct UpstreamRouter {
     client: Client,
     catalog: ModelsCatalog,
     cooldowns: DashMap<String, u64>,
+    dynamic_models: DashMap<String, ModelConfig>,
 }
 
 fn now_unix() -> u64 {
@@ -74,6 +75,7 @@ impl UpstreamRouter {
             client,
             catalog,
             cooldowns: DashMap::new(),
+            dynamic_models: DashMap::new(),
         })
     }
 
@@ -103,6 +105,94 @@ impl UpstreamRouter {
 
     pub fn catalog(&self) -> &ModelsCatalog {
         &self.catalog
+    }
+
+    /// Merged view of static `models.toml` + dynamically synced upstream models.
+    pub fn all_models(&self) -> Vec<ModelConfig> {
+        let mut out = self.catalog.models.clone();
+        for entry in self.dynamic_models.iter() {
+            let m = entry.value();
+            if !out.iter().any(|existing| existing.id == m.id) {
+                out.push(m.clone());
+            }
+        }
+        out
+    }
+
+    /// Look up a model across both static catalog and dynamically synced models.
+    pub fn find_model(&self, id: &str) -> Option<ModelConfig> {
+        if let Some(m) = self.catalog.find_model(id) {
+            return Some(m.clone());
+        }
+        self.dynamic_models.get(id).map(|v| v.value().clone())
+    }
+
+    /// Dynamically pull `/models` from a live upstream channel and merge new models into memory.
+    pub async fn sync_channel_models(&self, ch: &LiveChannel) -> Result<usize, RelayError> {
+        let base = ch.base_url.trim_end_matches('/');
+        let key = ch.api_key.expose_secret();
+        let url = format!("{base}/models");
+        let resp = self
+            .client
+            .get(&url)
+            .bearer_auth(key)
+            .send()
+            .await
+            .map_err(|e| RelayError::UpstreamFailed(format!("sync {}: {e}", ch.id)))?;
+        if !resp.status().is_success() {
+            return Err(RelayError::UpstreamFailed(format!(
+                "sync {} http {}",
+                ch.id,
+                resp.status()
+            )));
+        }
+        let val: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| RelayError::UpstreamFailed(format!("sync {} json: {e}", ch.id)))?;
+        let arr = val
+            .get("data")
+            .and_then(|d| d.as_array())
+            .or_else(|| val.get("models").and_then(|d| d.as_array()));
+        let Some(items) = arr else {
+            return Ok(0);
+        };
+        let is_free_pool = ch.id.to_lowercase().contains("free");
+        let mut added = 0usize;
+        for item in items.iter().take(120) {
+            let raw_id = item
+                .get("id")
+                .or_else(|| item.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if raw_id.is_empty() {
+                continue;
+            }
+            let clean = raw_id.strip_prefix("models/").unwrap_or(raw_id);
+            let model_id = if is_free_pool && !clean.starts_with("free:") {
+                format!("free:{clean}")
+            } else {
+                clean.to_string()
+            };
+            if self.catalog.find_model(&model_id).is_some() {
+                continue;
+            }
+            let free_flag = is_free_pool || clean.ends_with(":free");
+            self.dynamic_models.insert(
+                model_id.clone(),
+                ModelConfig {
+                    id: model_id,
+                    channel_id: ch.id.clone(),
+                    upstream_model: clean.to_string(),
+                    input_per_m: if free_flag { 0 } else { 20 },
+                    output_per_m: if free_flag { 0 } else { 80 },
+                    allow_free: free_flag,
+                },
+            );
+            added += 1;
+        }
+        Ok(added)
     }
 
     /// Live probe an upstream channel: measure latency, count `/models`, and query upstream balance.
@@ -425,6 +515,59 @@ impl UpstreamRouter {
         resp.json::<serde_json::Value>()
             .await
             .map_err(|_| RelayError::UpstreamFailed("invalid upstream json".into()))
+    }
+
+    /// Forward JSON endpoint (images/embeddings/rerank) using DB live channel pool first,
+    /// rewriting `model` to the channel's `upstream_model`, with fallback to static env channel.
+    pub async fn forward_json_endpoint_with_pool<T: Serialize>(
+        &self,
+        model: &ModelConfig,
+        path_suffix: &str,
+        body: &T,
+        pool: &[LiveChannel],
+    ) -> Result<serde_json::Value, RelayError> {
+        if pool.is_empty() {
+            return self.forward_json_endpoint(model, path_suffix, body).await;
+        }
+        let mut payload = serde_json::to_value(body)
+            .map_err(|_| RelayError::UpstreamFailed("serialize payload failed".into()))?;
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("model".into(), serde_json::Value::String(model.upstream_model.clone()));
+        }
+        let mut last_err = None;
+        for ch in pool {
+            if self.is_cooled(&ch.id) {
+                continue;
+            }
+            let url = format!("{}/{}", ch.base_url.trim_end_matches('/'), path_suffix.trim_start_matches('/'));
+            match self
+                .client
+                .post(&url)
+                .bearer_auth(ch.api_key.expose_secret())
+                .json(&payload)
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    return resp
+                        .json::<serde_json::Value>()
+                        .await
+                        .map_err(|_| RelayError::UpstreamFailed("invalid upstream json".into()));
+                }
+                Ok(resp) => {
+                    let code = resp.status().as_u16();
+                    if code == 429 || code >= 500 {
+                        self.trip_cooldown(&ch.id, 60);
+                    }
+                    last_err = Some(RelayError::UpstreamFailed(format!("upstream {} HTTP {code}", ch.id)));
+                }
+                Err(_) => {
+                    self.trip_cooldown(&ch.id, 30);
+                    last_err = Some(RelayError::UpstreamFailed(format!("upstream {} timeout", ch.id)));
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| RelayError::UpstreamFailed("no live upstream channel".into())))
     }
 
     /// Measure upstream channel connectivity latency in milliseconds.

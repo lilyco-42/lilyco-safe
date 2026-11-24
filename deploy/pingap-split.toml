@@ -1,0 +1,29 @@
+# Pingap Multi-Binary Split Routing for lilyco-relay (Zero-Downtime Modular Deployment)
+# Data Plane (`relay-proxy` :8091) and Control Plane (`relay-admin` :8092) restart independently.
+# Frontend (`web_dist/`) hot-swaps via `rsync` with ZERO backend restart.
+
+[upstreams.relay_proxy]
+addrs = ["127.0.0.1:8091"]
+connection_timeout = "5s"
+read_timeout = "120s"
+
+[upstreams.relay_admin]
+addrs = ["127.0.0.1:8092"]
+connection_timeout = "5s"
+read_timeout = "30s"
+
+[locations.relay_data_plane]
+host = "dev.lain42.top"
+path = "/relay/v1"
+upstream = "relay_proxy"
+proxy_set_headers = ["X-Forwarded-Proto:https"]
+
+[locations.relay_mcp_plane]
+host = "dev.lain42.top"
+path = "/relay/mcp"
+upstream = "relay_proxy"
+
+[locations.relay_control_and_ui]
+host = "dev.lain42.top"
+path = "/relay"
+upstream = "relay_admin"

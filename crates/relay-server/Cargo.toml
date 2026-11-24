@@ -17,5 +17,7 @@ serde.workspace = true
 serde_json.workspace = true
 reqwest.workspace = true
 async-stream.workspace = true
+base64.workspace = true
 futures-util.workspace = true
 eventsource-stream.workspace = true
+ysm-web = { path = "../../../ysm-web" }

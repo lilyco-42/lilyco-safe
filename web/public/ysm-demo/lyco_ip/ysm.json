@@ -1,0 +1,42 @@
+{
+  "spec": 2,
+  "metadata": {
+    "name": "lyco_ip",
+    "tips": "LYCO (莉可) — 静态的秩序，动态的锋芒",
+    "authors": [
+      {
+        "name": "lilyco-42",
+        "role": "IP Creator"
+      },
+      {
+        "name": "ysm-ai-engine",
+        "role": "YSM 2.6.0 Procedural Engine"
+      }
+    ],
+    "license": {
+      "type": "All Rights Reserved"
+    }
+  },
+  "properties": {
+    "height_scale": 0.72,
+    "width_scale": 0.72,
+    "default_texture": "textures/default.png"
+  },
+  "files": {
+    "player": {
+      "model": {
+        "main": "models/main.json",
+        "arm": "models/arm.json"
+      },
+      "animation": {
+        "main": "animations/main.animation.json",
+        "arm": "animations/arm.animation.json"
+      },
+      "texture": [
+        {
+          "uv": "textures/default.png"
+        }
+      ]
+    }
+  }
+}

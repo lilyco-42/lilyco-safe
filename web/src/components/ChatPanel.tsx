@@ -1,3 +1,4 @@
+import { ModelCompanyCards } from "./ModelCompanyCards";
 import { useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -143,9 +144,12 @@ export function ChatPanel({
 
         <div>
           <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
-            选择模型（推荐 deepseek-v4.1-flash）
+            选择模型
           </label>
-          <select className="select" value={selectedModel} onChange={(e) => onSelectModel(e.target.value)}>
+          <ModelCompanyCards compact textOnly selected={selectedModel} onPick={onSelectModel} />
+          <details style={{ marginTop: 6 }}>
+            <summary style={{ cursor: "pointer", fontSize: 12 }}>全部模型</summary>
+          <select aria-label="全部模型" className="select" value={selectedModel} onChange={(e) => onSelectModel(e.target.value)}>
             {models.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.id}
@@ -154,6 +158,7 @@ export function ChatPanel({
               </option>
             ))}
           </select>
+          </details>
           {isOverseas && (
             <div style={{ fontSize: 11.5, color: "var(--warning)", marginTop: 6, lineHeight: 1.5 }}>
               提示：当前华为云节点位于国内，直连 Google/OpenRouter 可能超时；建议优先选择带 ⚡ 的国内极速模型。

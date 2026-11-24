@@ -2076,6 +2076,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d902046e6a28a1e4c3cab97258a0ce11e994903f01c2d97a9447a0b3df85f4f6"
 
 [[package]]
+name = "relay-admin"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "relay-server",
+ "tokio",
+]
+
+[[package]]
 name = "relay-core"
 version = "0.1.0"
 dependencies = [
@@ -2105,6 +2114,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "relay-proxy"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "relay-server",
+ "tokio",
+]
+
+[[package]]
 name = "relay-risk"
 version = "0.1.0"
 dependencies = [
@@ -2118,6 +2136,7 @@ version = "0.1.0"
 dependencies = [
  "async-stream",
  "axum",
+ "base64 0.22.1",
  "eventsource-stream",
  "futures-util",
  "relay-core",
@@ -2130,6 +2149,15 @@ dependencies = [
  "tower",
  "tower-http",
  "tower_governor",
+ "ysm-web",
+]
+
+[[package]]
+name = "relay-worker"
+version = "0.1.0"
+dependencies = [
+ "relay-server",
+ "tokio",
 ]
 
 [[package]]
@@ -3738,6 +3766,16 @@ dependencies = [
  "quote",
  "syn 3.0.10",
  "synstructure",
+]
+
+[[package]]
+name = "ysm-web"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]

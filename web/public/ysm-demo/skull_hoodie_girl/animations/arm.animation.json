@@ -1,0 +1,127 @@
+{
+  "format_version": "1.8.0",
+  "animations": {
+    "use_mainhand:eat": {
+      "loop": true,
+      "animation_length": 0.4,
+      "bones": {
+        "RightArm": {
+          "rotation": {
+            "0.0": [
+              -76,
+              22,
+              -6
+            ],
+            "0.2": [
+              -86,
+              26,
+              -8
+            ],
+            "0.4": [
+              -76,
+              22,
+              -6
+            ]
+          }
+        },
+        "RightHand": {
+          "rotation": [
+            -16,
+            0,
+            0
+          ]
+        }
+      }
+    },
+    "use_mainhand:drink": {
+      "loop": true,
+      "animation_length": 0.4,
+      "bones": {
+        "RightArm": {
+          "rotation": {
+            "0.0": [
+              -84,
+              20,
+              -6
+            ],
+            "0.2": [
+              -92,
+              22,
+              -6
+            ],
+            "0.4": [
+              -84,
+              20,
+              -6
+            ]
+          }
+        },
+        "RightHand": {
+          "rotation": [
+            -18,
+            0,
+            0
+          ]
+        }
+      }
+    },
+    "use_mainhand:bow": {
+      "loop": "hold_on_last_frame",
+      "animation_length": 0.35,
+      "bones": {
+        "RightArm": {
+          "rotation": {
+            "0.0": [
+              -38,
+              0,
+              0
+            ],
+            "0.35": [
+              -90,
+              14,
+              4
+            ]
+          }
+        },
+        "LeftArm": {
+          "rotation": {
+            "0.0": [
+              -38,
+              0,
+              0
+            ],
+            "0.35": [
+              -86,
+              -30,
+              -6
+            ]
+          }
+        }
+      }
+    },
+    "use_mainhand:shield": {
+      "loop": true,
+      "bones": {
+        "RightArm": {
+          "rotation": [
+            -46,
+            24,
+            -10
+          ]
+        }
+      }
+    },
+    "use_offhand:shield": {
+      "loop": true,
+      "bones": {
+        "LeftArm": {
+          "rotation": [
+            -46,
+            -24,
+            10
+          ]
+        }
+      }
+    }
+  }
+}

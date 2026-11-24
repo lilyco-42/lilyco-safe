@@ -1,88 +1,7 @@
-mod handlers;
-mod state;
-
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::Arc;
 
-use axum::routing::{delete, get, post};
-use axum::Router;
-use relay_core::{GatewayConfig, I18nBundle, ModelsCatalog, RelayError};
-use relay_engine::{RelayLedger, UpstreamRouter};
-use relay_risk::RiskEngine;
-use state::{AppState, RuntimeBundle};
-use tower_governor::governor::GovernorConfigBuilder;
-use tower_governor::GovernorLayer;
-use tower_http::compression::CompressionLayer;
-use tower_http::cors::CorsLayer;
-use tower_http::services::ServeDir;
-
-pub fn build_app(state: AppState) -> Router {
-    let web_dir = std::env::var("RELAY_WEB_DIR").unwrap_or_else(|_| "./web_dist".into());
-    let rpm = state.runtime.cfg.risk.max_rpm_per_ip.max(1);
-    let burst = (rpm / 2).max(5);
-    let gov_cfg = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second((rpm / 60).max(1) as u64)
-            .burst_size(burst)
-            .finish()
-            .expect("valid governor config"),
-    );
-
-    Router::new()
-        .route("/api/v1/health", get(handlers::api_health))
-        .route("/api/v1/auth/login", post(handlers::api_portal_login))
-        .route("/api/v1/auth/register", post(handlers::api_portal_register))
-        .route("/api/v1/me", get(handlers::api_me))
-        .route("/api/v1/trial-cards/activate", post(handlers::api_activate_trial_card))
-        .route("/api/v1/dashboard/stats", get(handlers::api_dashboard_stats))
-        .route("/api/v1/logs", get(handlers::api_usage_logs))
-        .route("/v1/models", get(handlers::api_list_models))
-        .route("/v1/models/{model}", get(handlers::api_get_model))
-        .route("/v1/chat/completions", post(handlers::api_openai_chat))
-        .route("/v1/messages", post(handlers::api_anthropic_messages))
-        .route("/v1/embeddings", post(handlers::api_embeddings))
-        .route("/v1/images/generations", post(handlers::api_images))
-        .route("/v1/rerank", post(handlers::api_rerank))
-        .route("/api/v1/keys", post(handlers::api_issue_key))
-        .route("/api/v1/keys/revoke", post(handlers::api_revoke_key))
-        .route("/api/v1/redeem", post(handlers::api_redeem))
-        .route("/api/v1/affiliate/bind", post(handlers::api_bind_affiliate))
-        .route("/api/v1/affiliate/transfer", post(handlers::api_affiliate_transfer))
-        .route("/api/v1/admin/channels", get(handlers::api_admin_list_channels).post(handlers::api_admin_upsert_channel))
-        .route("/api/v1/admin/channels/{id}", delete(handlers::api_admin_delete_channel))
-        .route("/api/v1/admin/channels/{id}/probe", post(handlers::api_admin_probe_channel))
-        .route("/api/v1/admin/resell/keys", post(handlers::api_admin_mint_resell_keys))
-        .route("/api/v1/admin/users", get(handlers::api_admin_list_users))
-        .route("/api/v1/admin/users/role", post(handlers::api_admin_update_role))
-        .route("/api/v1/admin/redemptions", post(handlers::api_admin_create_redemptions))
-        .route("/api/v1/admin/risk/block_ip", post(handlers::api_admin_block_ip))
-        .route("/api/v1/admin/risk/unblock_ip", post(handlers::api_admin_unblock_ip))
-        .route("/api/v1/admin/topup", post(handlers::api_admin_topup))
-        .route("/mcp", post(handlers::api_mcp))
-        .fallback_service(ServeDir::new(web_dir))
-        .layer(GovernorLayer::new(gov_cfg))
-        .layer(CompressionLayer::new())
-        .layer(CorsLayer::permissive())
-        .with_state(state)
-}
-
-async fn init_state(cfg_path: &Path) -> Result<AppState, RelayError> {
-    let cfg = GatewayConfig::load(cfg_path)?;
-    let catalog = ModelsCatalog::load(Path::new(&cfg.storage.models_file))?;
-    let i18n = I18nBundle::load(Path::new(&cfg.storage.i18n_dir), &cfg.storage.default_lang)?;
-    let admin_key = std::env::var(&cfg.server.admin_key_env).unwrap_or_default();
-    let ledger = RelayLedger::open(&cfg.storage.db_path).await?;
-    let risk = Arc::new(RiskEngine::new(&cfg.risk, &cfg.security));
-    let router = Arc::new(UpstreamRouter::new(catalog)?);
-    let runtime = Arc::new(RuntimeBundle {
-        cfg,
-        i18n,
-        admin_key,
-        portal_client: reqwest::Client::new(),
-    });
-    Ok(AppState { runtime, risk, ledger, router })
-}
+use relay_server::{build_app, init_state, shutdown_signal};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -96,6 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await?;
     Ok(())
 }
@@ -103,18 +23,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use axum::Router;
+    use axum::routing::post;
     use relay_core::config::{
         ChannelConfig, ModelConfig, RiskSection, SecuritySection, ServerSection, StorageSection,
     };
-    use relay_core::{KeyIssueReq, KeyScope};
+    use relay_core::{GatewayConfig, I18nBundle, KeyIssueReq, KeyScope, ModelsCatalog};
+    use relay_engine::{RelayLedger, UpstreamRouter};
+    use relay_risk::RiskEngine;
+    use relay_server::state::{AppState, RuntimeBundle};
 
     async fn spawn_mock_upstream() -> String {
         let mock = Router::new().route(
             "/chat/completions",
-            post(|| async {
+            post(|axum::Json(request): axum::Json<serde_json::Value>| async move {
+                let content = if request["messages"][0]["content"] == ysm_web::DESIGN_PROMPT
+                    && request["messages"][1]["content"] != "broken design"
+                {
+                    serde_json::json!({
+                        "name": "Smoke test",
+                        "hair": "braids",
+                        "outfit": "ranger",
+                        "palette": {"skin":"#E9BC9F","hair":"#332326","eyes":"#478D7B","primary":"#314D42","secondary":"#50786C","accent":"#D7AD63","boots":"#43302D"},
+                        "details": []
+                    }).to_string()
+                } else {
+                    "Hello from MIT lilyco-relay!".to_string()
+                };
                 axum::Json(serde_json::json!({
                     "id": "chatcmpl-mock-1",
-                    "choices": [{ "message": { "role": "assistant", "content": "Hello from MIT lilyco-relay!" } }],
+                    "choices": [{ "message": { "role": "assistant", "content": content } }],
                     "usage": { "prompt_tokens": 12, "completion_tokens": 8 }
                 }))
             }),
@@ -252,6 +191,31 @@ mod tests {
         let j2: serde_json::Value = r2.json().await.unwrap();
         assert_eq!(j2["content"][0]["text"], "Hello from MIT lilyco-relay!");
         assert_eq!(ledger.get_wallet("alice").await.unwrap().paid_credits, 98);
+
+        let generated = client
+            .post(format!("http://{addr}/v1/ysm/generations"))
+            .bearer_auth(&api_key)
+            .json(&serde_json::json!({"model":"gemini-2.5-flash","prompt":"A blocky forest traveller"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(generated.status(), 200);
+        assert_eq!(generated.headers()["content-type"], "application/zip");
+        let bytes = generated.bytes().await.unwrap();
+        assert!(bytes.starts_with(b"PK\x03\x04"));
+        assert!(bytes.windows(b"textures/default.png".len()).any(|w| w == b"textures/default.png"));
+        assert!(bytes.windows(b"renders/turnaround.png".len()).any(|w| w == b"renders/turnaround.png"));
+
+        assert_eq!(ledger.get_wallet("alice").await.unwrap().paid_credits, 97);
+        let invalid_design = client
+            .post(format!("http://{addr}/v1/ysm/generations"))
+            .bearer_auth(&api_key)
+            .json(&serde_json::json!({"model":"gemini-2.5-flash","prompt":"broken design"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(invalid_design.status(), 502);
+        assert_eq!(ledger.get_wallet("alice").await.unwrap().paid_credits, 97);
 
         // 3. Zero-trust unknown field injection rejected with 422/400
         let r_bad = client

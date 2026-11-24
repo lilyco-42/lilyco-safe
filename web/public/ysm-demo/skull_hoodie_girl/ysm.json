@@ -1,0 +1,40 @@
+{
+  "spec": 2,
+  "metadata": {
+    "name": "骷髅兜帽少女 (Skull Hoodie Girl)",
+    "tips": "奶白淡紫长发立体骷髅兜帽少女自定义 YSM 2.6.0 模型\n包含 3D 立体骷髅兜帽、独立 3×2 像素眼部图层、多层片状长发、胸前与鞋面立体小骷髅饰品、第一人称宽袖手臂及全套基础动作。",
+    "license": {
+      "type": "CC-BY-NC-SA 4.0",
+      "desc": "Custom YSM 2.6.0 model built from user 3-view turnaround."
+    },
+    "authors": [
+      {
+        "name": "Antigravity Designer",
+        "role": "3D Modeling / Pixel Texturing / Rigging / Base Animations",
+        "comment": "Built & verified to YSM 2.6.0 specification"
+      }
+    ]
+  },
+  "properties": {
+    "height_scale": 0.94,
+    "width_scale": 0.92,
+    "preview_animation": "gui",
+    "disable_preview_rotation": false
+  },
+  "files": {
+    "player": {
+      "model": {
+        "main": "models/main.json",
+        "arm": "models/arm.json"
+      },
+      "animation": {
+        "main": "animations/main.animation.json",
+        "arm": "animations/arm.animation.json"
+      },
+      "texture": [
+        "textures/default.png"
+      ]
+    },
+    "language_path": "lang"
+  }
+}

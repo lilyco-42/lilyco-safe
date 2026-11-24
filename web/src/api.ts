@@ -108,9 +108,58 @@ export interface AdminUserSummary {
   bonus_credits: number;
 }
 
+export type ChatContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 export interface ChatTurn {
   role: "system" | "user" | "assistant";
   content: string;
+}
+
+export interface MultimodalChatTurn {
+  role: "system" | "user" | "assistant";
+  content: string | ChatContentPart[];
+}
+
+export interface YsmPersonaInput {
+  name?: string;
+  personality?: string;
+  outfit_notes?: string;
+  proportions?: "standard" | "slim" | "chibi" | "tall" | "";
+}
+
+export interface YsmReferenceInput {
+  turnaround_images?: string[];
+  ref_model_name?: string;
+  ref_model_summary?: string;
+  pipeline?: "fast" | "head_first" | "studio_refine";
+}
+
+export interface YsmCatalogItem {
+  id: string;
+  source: string;
+  source_label: string;
+  title: string;
+  description: string;
+  authors: string[];
+  downloads: number;
+  rating: number;
+  free: boolean;
+  license: string;
+  tags: string[];
+  cover_url: string;
+  download_url: string;
+  homepage_url: string;
+}
+
+export interface YsmCatalogResp {
+  ok: boolean;
+  total: number;
+  region_country?: string;
+  nsfw_filtered?: boolean;
+  sources_used: string[];
+  items: YsmCatalogItem[];
 }
 
 async function parseJson<T>(r: Response): Promise<T> {
@@ -266,7 +315,7 @@ export async function transferAffiliate(jwt: string): Promise<{ transferred: num
 export async function sendChat(
   apiKey: string,
   model: string,
-  messages: ChatTurn[],
+  messages: MultimodalChatTurn[],
   maxTokens: number,
 ): Promise<{ reply: string; usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } }> {
   const d = await parseJson<{
@@ -398,6 +447,193 @@ export async function adminProbeChannel(
 ): Promise<ChannelProbeResp> {
   return parseJson(
     await fetch(`${API_BASE}/api/v1/admin/channels/${encodeURIComponent(id)}/probe`, {
+      method: "POST",
+      headers: adminHeaders(jwt, adminKey),
+    }),
+  );
+}
+
+export interface ImageGenResp {
+  data?: { url?: string; b64_json?: string; revised_prompt?: string }[];
+}
+
+export interface YsmGenResult {
+  file: File;
+  blob: Blob;
+  filename: string;
+}
+
+function extractFilenameFromDisposition(disposition: string | null): string | null {
+  if (!disposition) return null;
+  const utf8Match = disposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1].trim());
+    } catch {
+      // ignore malformed URI encoding
+    }
+  }
+  const basicMatch = disposition.match(/filename\s*=\s*"?([^";]+)"?/i);
+  return basicMatch?.[1]?.trim() || null;
+}
+
+function formatYsmApiError(status: number, bodyText: string): string {
+  let code = "";
+  let message = "";
+  let detail = "";
+
+  if (bodyText) {
+    try {
+      const parsed = JSON.parse(bodyText) as {
+        code?: string;
+        message?: string;
+        detail?: string;
+        error?: string | { message?: string; code?: string };
+      };
+      code = parsed.code || (typeof parsed.error === "object" ? parsed.error?.code || "" : "");
+      message =
+        parsed.message ||
+        (typeof parsed.error === "object"
+          ? parsed.error?.message || ""
+          : typeof parsed.error === "string"
+            ? parsed.error
+            : "");
+      detail = parsed.detail || "";
+    } catch {
+      detail = bodyText
+        .trim()
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .slice(0, 220);
+    }
+  }
+
+  const combined = [message, detail && detail !== message ? detail : ""].filter(Boolean).join(" — ");
+
+  if (status === 401 || code === "unauthorized") {
+    return combined || "API Key 无效或缺失，请填写有效的 Bearer Token（sk-l42-...）";
+  }
+  if (status === 402 || code === "insufficient_paid") {
+    return combined || "实付积分不足，请切换到免费文本模型或前往钱包充值";
+  }
+  if (status === 400 || code === "invalid_input") {
+    return combined || "请求参数无效（提示词长度需在 1～4000 字符之间）";
+  }
+  if (status === 403 || code === "forbidden" || code === "ip_blocked" || code === "drain_guard") {
+    return combined || "当前密钥或 IP 无权调用该模型，请检查权限设置";
+  }
+  if (status === 404 || code === "model_not_found") {
+    return combined || "所选文本模型不存在或暂不可用，请更换其他文本模型";
+  }
+  if (status === 429 || code === "rate_limited") {
+    return combined || "请求过于频繁，触发限流，请稍后再试";
+  }
+  if (status === 502 || code === "upstream_failed") {
+    return combined || "上游模型未能返回可用的 YSM 设计，建议切换更强的文本模型或细化角色描述后重试";
+  }
+  return combined || `YSM 生成请求失败 (HTTP ${status})`;
+}
+
+export async function fetchYsmCatalog(params: {
+  source?: "all" | "lain42" | "alltheysm" | "custom";
+  q?: string;
+  sort?: "downloads" | "featured" | "newest";
+  freeOnly?: boolean;
+  page?: number;
+  limit?: number;
+  customSource?: string;
+}): Promise<YsmCatalogResp> {
+  const qs = new URLSearchParams();
+  if (params.source) qs.set("source", params.source);
+  if (params.q?.trim()) qs.set("q", params.q.trim());
+  if (params.sort) qs.set("sort", params.sort);
+  if (params.freeOnly) qs.set("free_only", "true");
+  if (params.page) qs.set("page", String(params.page));
+  if (params.limit) qs.set("limit", String(params.limit));
+  if (params.customSource?.trim()) qs.set("custom_source", params.customSource.trim());
+  return parseJson(await fetch(`${API_BASE}/api/v1/ysm/catalog?${qs.toString()}`));
+}
+
+export async function generateYsmPackage(
+  apiKey: string,
+  payload: {
+    model: string;
+    prompt: string;
+    persona?: YsmPersonaInput;
+    reference?: YsmReferenceInput;
+  },
+  signal?: AbortSignal,
+): Promise<YsmGenResult> {
+  const body: Record<string, unknown> = {
+    model: payload.model,
+    prompt: payload.prompt,
+  };
+  if (payload.persona) body.persona = payload.persona;
+  if (payload.reference) body.reference = payload.reference;
+
+  const res = await fetch(`${API_BASE}/v1/ysm/generations`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey.trim()}`,
+      Accept: "application/zip, application/json",
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(formatYsmApiError(res.status, errText));
+  }
+
+  const contentType = (res.headers.get("content-type") || "").toLowerCase();
+  const buf = await res.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  const isPkZip = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b;
+
+  if (!isPkZip) {
+    const text = new TextDecoder("utf-8").decode(bytes);
+    if (contentType.includes("json") || text.trim().startsWith("{")) {
+      throw new Error(formatYsmApiError(res.status, text));
+    }
+    throw new Error(
+      `服务端未返回有效的 application/zip 模型包（Content-Type: ${contentType || "unknown"}，${bytes.length} 字节）`,
+    );
+  }
+
+  const filename = extractFilenameFromDisposition(res.headers.get("content-disposition")) || "character-ysm.zip";
+  const blob = new Blob([buf], { type: "application/zip" });
+  const file = new File([blob], filename, { type: "application/zip" });
+  return { file, blob, filename };
+}
+
+export async function generateImage(
+  apiKey: string,
+  payload: { model: string; prompt: string; size?: string; n?: number },
+): Promise<ImageGenResp> {
+  return parseJson(
+    await fetch(`${API_BASE}/v1/images/generations`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(payload),
+    }),
+  );
+}
+
+export interface SyncModelsResp {
+  ok: boolean;
+  synced_channels: number;
+  added_models: number;
+  total_models: number;
+}
+
+export async function adminSyncModels(jwt: string, adminKey: string): Promise<SyncModelsResp> {
+  return parseJson(
+    await fetch(`${API_BASE}/api/v1/admin/models/sync`, {
       method: "POST",
       headers: adminHeaders(jwt, adminKey),
     }),
