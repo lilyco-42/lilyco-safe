@@ -27,12 +27,13 @@
   - `studio-billing.service` (`127.0.0.1:4700`) — 商业订单与激活
   - `proxy-panel.service` (`:8010`) — 专线订阅管理
   - `lyco-ai-gateway` (`:4705`) / `lyco-relay` (`:4706`) — 老站点兼容计量网关
-  - `lain42-moss-broker.service` (`127.0.0.1:4720`) — MOSS 画廊与云端/GPU 调度（后续可平滑迁至 Server B + R2）
+  - *(已迁出至 Server B：`lain42-moss-broker`，Pingap 透明转发至 `123.60.38.191:4720`)*
 
 ### 服务器 B：`123.60.38.191`（`dev.lain42.top` — AI 业务与高频迭代区）
 - **配置**：1.7 GiB RAM / 40 GB Disk（余量 19 GB，负载健康）
 - **核心常驻服务**：
   - `lilyco-relay.service` (`:8090`) — MIT 零信任 Rust AI 中转站（OpenAI / Anthropic / Gemini 原生多模态）
+  - `lain42-moss-broker.service` (`:4720`) — MOSS 绘梦、画廊存储（`/var/www/moss-outputs`）与 GPU/云端调度，直连本机 `127.0.0.1:8090` 零公网延迟
   - `lain42-portal-dev.service` (`:80`) / `lain42-portal-test.service` (`:443`) — 商业门户与支付
   - `relay-egress-proxy.service` (`127.0.0.1:7890`) — 上游出海代理（Mihomo）
   - `mc-asset-hub.service` (`:8088`) — YSM / Litematica 资产中心

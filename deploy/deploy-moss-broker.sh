@@ -3,8 +3,8 @@
 set -euo pipefail
 
 SRC_DIR="${1:?usage: deploy-moss-broker.sh <dir-containing-broker.py-and-gallery.py>}"
-REMOTE="${MOSS_REMOTE:-root@8.153.102.122}"
-KEY_FILE="${MOSS_SSH_KEY:-$HOME/.ssh/lain42.pem}"
+REMOTE="${MOSS_REMOTE:-root@123.60.38.191}"
+KEY_FILE="${MOSS_SSH_KEY:-$HOME/.ssh/lain42-dev.pem}"
 
 python3 -m py_compile "$SRC_DIR/broker.py" "$SRC_DIR/gallery.py"
 
