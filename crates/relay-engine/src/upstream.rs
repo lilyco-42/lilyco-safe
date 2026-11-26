@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
@@ -11,6 +12,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::gemini_adapter;
 use crate::ledger::LiveChannel;
+use crate::vertex_auth::VertexAuth;
+
+fn global_vertex_auth() -> &'static VertexAuth {
+    static VERTEX: OnceLock<VertexAuth> = OnceLock::new();
+    VERTEX.get_or_init(VertexAuth::load_from_env)
+}
 
 /// Sanitized upstream completion reply (4 fields, Rule of 4).
 #[derive(Debug, Clone, Serialize)]
@@ -542,6 +549,10 @@ impl UpstreamRouter {
         if is_gemini_img
             && let Ok(img_req) = serde_json::from_value::<ImageGenReq>(payload.clone())
         {
+            let vauth = global_vertex_auth();
+            if vauth.is_configured() && model.upstream_model.contains("nano-banana") {
+                return gemini_adapter::vertex_generate_image(&self.client, vauth, &model.upstream_model, &img_req).await;
+            }
             for ch in pool.iter().filter(|c| gemini_adapter::is_gemini_channel(c)) {
                 if self.is_cooled(&ch.id) {
                     continue;
@@ -618,13 +629,17 @@ impl UpstreamRouter {
         Err(last_err.unwrap_or_else(|| RelayError::UpstreamFailed("no live gemini tts channel".into())))
     }
 
-    /// Dispatch native Lyria music generation (`/v1/music/generations`) across live Gemini pool.
+    /// Dispatch native Lyria music generation (`/v1/music/generations`), preferring Vertex AI when configured.
     pub async fn call_music_with_pool(
         &self,
         model: &ModelConfig,
         req: &MusicGenReq,
         pool: &[LiveChannel],
     ) -> Result<serde_json::Value, RelayError> {
+        let vauth = global_vertex_auth();
+        if vauth.is_configured() {
+            return gemini_adapter::vertex_generate_music(&self.client, vauth, &model.upstream_model, req).await;
+        }
         let mut last_err = None;
         for ch in pool.iter().filter(|c| gemini_adapter::is_gemini_channel(c)) {
             if self.is_cooled(&ch.id) {
@@ -641,13 +656,17 @@ impl UpstreamRouter {
         Err(last_err.unwrap_or_else(|| RelayError::UpstreamFailed("no live gemini music channel".into())))
     }
 
-    /// Start async Veo video generation (`/v1/videos/generations`) across live Gemini pool.
+    /// Start async Veo video generation (`/v1/videos/generations`), preferring Vertex AI when configured.
     pub async fn call_video_with_pool(
         &self,
         model: &ModelConfig,
         req: &VideoGenReq,
         pool: &[LiveChannel],
     ) -> Result<serde_json::Value, RelayError> {
+        let vauth = global_vertex_auth();
+        if vauth.is_configured() {
+            return gemini_adapter::vertex_start_video(&self.client, vauth, &model.upstream_model, req).await;
+        }
         let mut last_err = None;
         for ch in pool.iter().filter(|c| gemini_adapter::is_gemini_channel(c)) {
             if self.is_cooled(&ch.id) {
@@ -664,12 +683,16 @@ impl UpstreamRouter {
         Err(last_err.unwrap_or_else(|| RelayError::UpstreamFailed("no live gemini video channel".into())))
     }
 
-    /// Poll async Veo operation status across live Gemini pool.
+    /// Poll async Veo operation status (supports both Vertex AI operations and AI Studio operations).
     pub async fn poll_video_with_pool(
         &self,
         operation: &str,
         pool: &[LiveChannel],
     ) -> Result<serde_json::Value, RelayError> {
+        let vauth = global_vertex_auth();
+        if vauth.is_configured() && operation.contains("/locations/") {
+            return gemini_adapter::vertex_poll_video(&self.client, vauth, operation).await;
+        }
         let mut last_err = None;
         for ch in pool.iter().filter(|c| gemini_adapter::is_gemini_channel(c)) {
             if self.is_cooled(&ch.id) {

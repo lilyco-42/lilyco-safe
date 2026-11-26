@@ -662,7 +662,17 @@ async fn forward_paid_endpoint<T: serde::Serialize>(
         .ok_or_else(|| RelayError::ModelNotFound(format!("unknown model {model_id}")))?;
     let verified = st.ledger.verify_api_key(&raw_key, &model.id).await?;
     st.risk.check_key_ip_whitelist(ip, &verified.allowed_ips)?;
-    let hold_cost = if model.allow_free { 0 } else { 1 };
+    let hold_cost = if model.allow_free {
+        0
+    } else if model.id.starts_with("veo-") {
+        80
+    } else if model.id.starts_with("lyria-") {
+        15
+    } else if model.id.contains("nano-banana") || model.id.starts_with("imagen-") {
+        10
+    } else {
+        1
+    };
     st.risk.check_key_spend(&verified.record.id, hold_cost)?;
     let hold = st.ledger.pre_hold_paid(&verified.record, hold_cost).await?;
     let pool = st.ledger.find_live_channels(&model.id).await.unwrap_or_default();
@@ -737,7 +747,17 @@ where
         .ok_or_else(|| RelayError::ModelNotFound(format!("unknown model {model_id}")))?;
     let verified = st.ledger.verify_api_key(&raw_key, &model.id).await?;
     st.risk.check_key_ip_whitelist(ip, &verified.allowed_ips)?;
-    let hold_cost = if model.allow_free { 0 } else { 1 };
+    let hold_cost = if model.allow_free {
+        0
+    } else if model.id.starts_with("veo-") {
+        80
+    } else if model.id.starts_with("lyria-") {
+        15
+    } else if model.id.contains("nano-banana") || model.id.starts_with("imagen-") {
+        10
+    } else {
+        1
+    };
     st.risk.check_key_spend(&verified.record.id, hold_cost)?;
     let hold = st.ledger.pre_hold_paid(&verified.record, hold_cost).await?;
     let pool = st.ledger.find_live_channels(&model.id).await.unwrap_or_default();

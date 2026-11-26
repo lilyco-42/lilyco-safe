@@ -23,6 +23,7 @@ export function AudioVideoWorkbench({ apiKey, msg, onGoTokens, onToast }: AudioV
   const [ttsBusy, setTtsBusy] = useState(false);
 
   const [musicPrompt, setMusicPrompt] = useState("Gentle anime piano with soft summer rain, relaxing lo-fi");
+  const [musicAudioUrl, setMusicAudioUrl] = useState("");
   const [musicResult, setMusicResult] = useState("");
   const [musicBusy, setMusicBusy] = useState(false);
 
@@ -71,8 +72,14 @@ export function AudioVideoWorkbench({ apiKey, msg, onGoTokens, onToast }: AudioV
         prompt: musicPrompt.trim(),
         duration_sec: 30,
       });
-      setMusicResult(JSON.stringify(res.data, null, 2).slice(0, 600));
-      onToast("Lyria 音乐请求已完成");
+      if (res.audio_base64) {
+        setMusicAudioUrl(`data:${res.mime_type || "audio/wav"};base64,${res.audio_base64}`);
+        setMusicResult("");
+        onToast("Lyria AI 音乐生成成功，可直接试听！");
+      } else {
+        setMusicResult(JSON.stringify(res.data, null, 2).slice(0, 600));
+        onToast("Lyria 音乐请求已完成");
+      }
     } catch (e) {
       onToast(`音乐生成失败：${(e as Error).message}`);
     } finally {
@@ -85,10 +92,10 @@ export function AudioVideoWorkbench({ apiKey, msg, onGoTokens, onToast }: AudioV
     setVideoBusy(true);
     try {
       const res = await startRelayVideo(apiKey, {
-        model: "veo-2.0-generate-001",
+        model: "veo-3.1-fast-generate-001",
         prompt: videoPrompt.trim(),
         aspect_ratio: "16:9",
-        duration_sec: 5,
+        duration_sec: 4,
       });
       setVideoOp(res.operation);
       setVideoStatus(`已入队：${res.operation}`);
@@ -160,8 +167,9 @@ export function AudioVideoWorkbench({ apiKey, msg, onGoTokens, onToast }: AudioV
           onChange={(e) => setMusicPrompt(e.target.value)}
         />
         <button type="button" className="btn btn-primary" disabled={musicBusy} onClick={() => void runMusic()}>
-          {musicBusy ? msg.generating : msg.lyriaBtn}
+          {musicBusy ? msg.generating : `${msg.lyriaBtn} (15 积分)`}
         </button>
+        {musicAudioUrl && <audio controls src={musicAudioUrl} style={{ width: "100%" }} />}
         {musicResult && <pre className="ms-code">{musicResult}</pre>}
       </section>
 
@@ -180,7 +188,7 @@ export function AudioVideoWorkbench({ apiKey, msg, onGoTokens, onToast }: AudioV
         />
         <div className="ms-ctrl-row">
           <button type="button" className="btn btn-primary" style={{ flex: 1 }} disabled={videoBusy} onClick={() => void runVideo()}>
-            {videoBusy ? msg.generating : msg.veoBtn}
+            {videoBusy ? msg.generating : `${msg.veoBtn} (Veo 3.1 · 80 积分)`}
           </button>
           {videoOp && (
             <button type="button" className="btn" disabled={videoBusy} onClick={() => void checkVideo()}>

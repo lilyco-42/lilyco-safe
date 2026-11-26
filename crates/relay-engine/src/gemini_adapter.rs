@@ -16,6 +16,7 @@ use secrecy::ExposeSecret;
 use serde_json::{Value, json};
 
 use crate::ledger::LiveChannel;
+use crate::vertex_auth::VertexAuth;
 
 /// Check whether a channel can speak native Google AI Studio REST protocol.
 pub fn is_gemini_channel(ch: &LiveChannel) -> bool {
@@ -349,6 +350,188 @@ pub async fn poll_video_job(
     resp.json::<Value>()
         .await
         .map_err(|_| RelayError::UpstreamFailed("invalid poll json".into()))
+}
+
+/// Generate music via Google Cloud Vertex AI (`lyria-002`) with daily safety cap.
+pub async fn vertex_generate_music(
+    client: &Client,
+    auth: &VertexAuth,
+    upstream_model: &str,
+    req: &MusicGenReq,
+) -> Result<Value, RelayError> {
+    auth.check_daily_budget()?;
+    let proj = auth
+        .project_id()
+        .ok_or_else(|| RelayError::UpstreamFailed("vertex project_id missing".into()))?;
+    let token = auth.access_token(client).await?;
+    let model = clean_model_id(upstream_model);
+    let url = format!(
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/{proj}/locations/us-central1/publishers/google/models/{model}:predict"
+    );
+    let mut inst = json!({ "prompt": req.prompt });
+    if let Some(ref neg) = req.negative_prompt
+        && !neg.trim().is_empty()
+    {
+        inst["negative_prompt"] = json!(neg.trim());
+    }
+    let resp = client
+        .post(&url)
+        .bearer_auth(&token)
+        .json(&json!({ "instances": [inst], "parameters": { "sampleCount": 1 } }))
+        .send()
+        .await
+        .map_err(|_| RelayError::UpstreamFailed("vertex lyria network timeout".into()))?;
+    if !resp.status().is_success() {
+        return Err(RelayError::UpstreamFailed(format!(
+            "vertex lyria HTTP {}",
+            resp.status().as_u16()
+        )));
+    }
+    let raw: Value = resp
+        .json()
+        .await
+        .map_err(|_| RelayError::UpstreamFailed("invalid vertex lyria json".into()))?;
+    let b64 = raw
+        .get("predictions")
+        .and_then(Value::as_array)
+        .and_then(|arr| arr.first())
+        .and_then(|p| p.get("bytesBase64Encoded"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    Ok(json!({
+        "ok": true,
+        "created": now_unix(),
+        "format": "wav",
+        "mime_type": "audio/wav",
+        "audio_base64": b64,
+        "provider": "vertex_ai",
+    }))
+}
+
+/// Start async Veo 3.1 video job via Vertex AI (`us-central1`) with daily safety cap.
+pub async fn vertex_start_video(
+    client: &Client,
+    auth: &VertexAuth,
+    upstream_model: &str,
+    req: &VideoGenReq,
+) -> Result<Value, RelayError> {
+    auth.check_daily_budget()?;
+    let proj = auth
+        .project_id()
+        .ok_or_else(|| RelayError::UpstreamFailed("vertex project_id missing".into()))?;
+    let token = auth.access_token(client).await?;
+    let model = clean_model_id(upstream_model);
+    let url = format!(
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/{proj}/locations/us-central1/publishers/google/models/{model}:predictLongRunning"
+    );
+    let aspect = req.aspect_ratio.as_deref().unwrap_or("16:9");
+    let duration = req.duration_sec.unwrap_or(4).clamp(4, 8);
+    let body = json!({
+        "instances": [{ "prompt": req.prompt }],
+        "parameters": { "aspectRatio": aspect, "durationSeconds": duration }
+    });
+    let resp = client
+        .post(&url)
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| RelayError::UpstreamFailed("vertex veo network timeout".into()))?;
+    if !resp.status().is_success() {
+        return Err(RelayError::UpstreamFailed(format!(
+            "vertex veo HTTP {}",
+            resp.status().as_u16()
+        )));
+    }
+    let raw: Value = resp
+        .json()
+        .await
+        .map_err(|_| RelayError::UpstreamFailed("invalid vertex veo json".into()))?;
+    let op_name = raw.get("name").and_then(Value::as_str).unwrap_or("");
+    Ok(json!({
+        "ok": true,
+        "status": "queued",
+        "operation": op_name,
+        "provider": "vertex_ai",
+        "raw": raw,
+    }))
+}
+
+/// Poll Vertex AI Veo long-running operation using `fetchPredictOperation`.
+pub async fn vertex_poll_video(
+    client: &Client,
+    auth: &VertexAuth,
+    operation: &str,
+) -> Result<Value, RelayError> {
+    let clean_op = operation.trim().trim_start_matches('/');
+    if clean_op.is_empty() || clean_op.contains("..") {
+        return Err(RelayError::InvalidInput("invalid operation path".into()));
+    }
+    let token = auth.access_token(client).await?;
+    let Some((model_path, _)) = clean_op.split_once("/operations/") else {
+        return Err(RelayError::InvalidInput("invalid vertex operation name".into()));
+    };
+    let url = format!("https://us-central1-aiplatform.googleapis.com/v1/{model_path}:fetchPredictOperation");
+    let resp = client
+        .post(&url)
+        .bearer_auth(&token)
+        .json(&json!({ "operationName": clean_op }))
+        .send()
+        .await
+        .map_err(|_| RelayError::UpstreamFailed("vertex veo poll timeout".into()))?;
+    if !resp.status().is_success() {
+        return Err(RelayError::UpstreamFailed(format!(
+            "vertex veo poll HTTP {}",
+            resp.status().as_u16()
+        )));
+    }
+    resp.json::<Value>()
+        .await
+        .map_err(|_| RelayError::UpstreamFailed("invalid vertex poll json".into()))
+}
+
+/// Generate Nano Banana 2.1 image via Vertex AI (`global`) with daily safety cap.
+pub async fn vertex_generate_image(
+    client: &Client,
+    auth: &VertexAuth,
+    upstream_model: &str,
+    req: &ImageGenReq,
+) -> Result<Value, RelayError> {
+    auth.check_daily_budget()?;
+    let proj = auth
+        .project_id()
+        .ok_or_else(|| RelayError::UpstreamFailed("vertex project_id missing".into()))?;
+    let token = auth.access_token(client).await?;
+    let model = clean_model_id(upstream_model);
+    let url = format!(
+        "https://aiplatform.googleapis.com/v1/projects/{proj}/locations/global/publishers/google/models/{model}:generateContent"
+    );
+    let body = json!({
+        "contents": [{ "role": "user", "parts": [{ "text": req.prompt }] }],
+        "generationConfig": { "responseModalities": ["IMAGE", "TEXT"] }
+    });
+    let resp = client
+        .post(&url)
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| RelayError::UpstreamFailed("vertex image network timeout".into()))?;
+    if !resp.status().is_success() {
+        return Err(RelayError::UpstreamFailed(format!(
+            "vertex image HTTP {}",
+            resp.status().as_u16()
+        )));
+    }
+    let raw: Value = resp
+        .json()
+        .await
+        .map_err(|_| RelayError::UpstreamFailed("invalid vertex image json".into()))?;
+    let data = extract_inline_media(&raw, "image/", &req.prompt);
+    if data.is_empty() {
+        return Err(RelayError::UpstreamFailed("vertex nano-banana returned no image".into()));
+    }
+    Ok(json!({ "created": now_unix(), "data": data, "provider": "vertex_ai" }))
 }
 
 #[cfg(test)]

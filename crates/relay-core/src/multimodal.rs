@@ -24,7 +24,7 @@ impl MediaProtocol {
         if m.starts_with("imagen-") {
             return Self::GeminiImagenPredict;
         }
-        if m.starts_with("gemini-") && m.contains("-image") {
+        if m.starts_with("gemini-") && (m.contains("-image") || m.contains("nano-banana")) {
             return Self::GeminiGenerateImage;
         }
         if m.starts_with("gemini-") && m.contains("-tts") {

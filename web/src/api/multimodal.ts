@@ -204,7 +204,7 @@ export async function callRelaySpeech(
 export async function callRelayMusic(
   apiKey: string,
   req: { model: string; prompt: string; duration_sec: number },
-): Promise<{ ok: boolean; data: unknown }> {
+): Promise<{ ok: boolean; format?: string; mime_type?: string; audio_base64?: string; data?: unknown }> {
   const res = await fetch(`${API_BASE}/v1/music/generations`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey.trim()}` },
