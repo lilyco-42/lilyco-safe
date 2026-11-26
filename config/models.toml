@@ -445,3 +445,37 @@ upstream_model = "veo-3.0-generate-preview"
 input_per_m = 150
 output_per_m = 150
 allow_free = false
+
+# === 自建 MOSS / AnimeXL 免费 GPU 算力池 ===
+
+[[models]]
+id = "free:moss-image-sft"
+channel_id = "lain42-moss-gpu"
+upstream_model = "moss-image-sft"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+[[models]]
+id = "moss-image-sft"
+channel_id = "lain42-moss-gpu"
+upstream_model = "moss-image-sft"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+[[models]]
+id = "free:noobai-xl-1.1"
+channel_id = "lain42-moss-gpu"
+upstream_model = "noobai-xl-1.1"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+[[models]]
+id = "free:animagine-xl-4.0"
+channel_id = "lain42-moss-gpu"
+upstream_model = "animagine-xl-4.0"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
