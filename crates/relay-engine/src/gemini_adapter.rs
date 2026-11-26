@@ -233,8 +233,9 @@ pub async fn generate_speech(
     let root = native_v1beta_root(&ch.base_url);
     let url = format!("{root}/models/{model}:generateContent");
     let voice = req.voice.as_deref().unwrap_or("Kore");
+    let tts_prompt = format!("Say aloud verbatim: {}", req.input.trim());
     let body = json!({
-        "contents": [{ "role": "user", "parts": [{ "text": req.input }] }],
+        "contents": [{ "role": "user", "parts": [{ "text": tts_prompt }] }],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
             "speechConfig": {
