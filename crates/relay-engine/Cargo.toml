@@ -18,3 +18,4 @@ bytes.workspace = true
 sea-query.workspace = true
 secrecy.workspace = true
 dashmap.workspace = true
+backon.workspace = true

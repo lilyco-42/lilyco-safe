@@ -10,10 +10,10 @@ use axum::Json;
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use relay_core::{
-    ActivateTrialReq, AdminRoleUpdateReq, AnthropicMsgReq, ChannelUpsertReq, ChatReq, ClientIp,
-    EmbeddingReq, ImageGenReq, KeyIssueReq, PortalAuthReq, PricingRate, RedeemCodeReq,
-    RedemptionCreateReq, RelayError, RerankReq, ResellKeyBatchReq, TokenUsage, UserRole,
-    UserRolePolicy,
+    ActivateTrialReq, AdminRoleUpdateReq, AnthropicMsgReq, AudioSpeechReq, ChannelUpsertReq,
+    ChatReq, ClientIp, EmbeddingReq, ImageGenReq, KeyIssueReq, MusicGenReq, PortalAuthReq,
+    PricingRate, RedeemCodeReq, RedemptionCreateReq, RelayError, RerankReq, ResellKeyBatchReq,
+    TokenUsage, UserRole, UserRolePolicy, VideoGenReq,
 };
 use relay_engine::{HoldReceipt, UpstreamReply};
 use serde::Deserialize;
@@ -709,6 +709,148 @@ pub async fn api_images(
         Err(e) => return st.err_response(&headers, e),
     };
     match forward_paid_endpoint(&st, &ip, &headers, &req.model, "images/generations", &req).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+/// Shared zero-trust paid-hold wrapper for native Gemini multimodal endpoints (Rule of 4).
+async fn run_paid_multimodal<F, Fut>(
+    st: &AppState,
+    ip: &ClientIp,
+    headers: &HeaderMap,
+    model_id: &str,
+    call: F,
+) -> Result<serde_json::Value, RelayError>
+where
+    F: FnOnce(relay_core::ModelConfig, Vec<relay_engine::LiveChannel>) -> Fut,
+    Fut: Future<Output = Result<serde_json::Value, RelayError>>,
+{
+    st.risk.check_ip(ip)?;
+    let raw_key = AppState::extract_bearer(headers).ok_or_else(|| {
+        st.risk.record_auth_failure(ip);
+        RelayError::Unauthorized("missing bearer api key".into())
+    })?;
+    let model = st
+        .router
+        .find_model(model_id)
+        .ok_or_else(|| RelayError::ModelNotFound(format!("unknown model {model_id}")))?;
+    let verified = st.ledger.verify_api_key(&raw_key, &model.id).await?;
+    st.risk.check_key_ip_whitelist(ip, &verified.allowed_ips)?;
+    let hold_cost = if model.allow_free { 0 } else { 1 };
+    st.risk.check_key_spend(&verified.record.id, hold_cost)?;
+    let hold = st.ledger.pre_hold_paid(&verified.record, hold_cost).await?;
+    let pool = st.ledger.find_live_channels(&model.id).await.unwrap_or_default();
+    let mid = model.id.clone();
+    match call(model, pool).await {
+        Ok(val) => {
+            let _ = st.ledger.settle_hold(&hold, &mid, TokenUsage::default(), hold_cost).await;
+            Ok(val)
+        }
+        Err(e) => {
+            let _ = st.ledger.refund_hold(&hold, &mid).await;
+            Err(e)
+        }
+    }
+}
+
+pub async fn api_audio_speech(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(req): Json<AudioSpeechReq>,
+) -> Response {
+    if let Err(e) = req.validate() {
+        return st.err_response(&headers, e);
+    }
+    let ip = match client_ip_from(&st, peer, &headers) {
+        Ok(v) => v,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    let router = st.router.clone();
+    let model_id = req.model.clone();
+    match run_paid_multimodal(&st, &ip, &headers, &model_id, |m, pool| async move {
+        router.call_speech_with_pool(&m, &req, &pool).await
+    })
+    .await
+    {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_music_generations(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(req): Json<MusicGenReq>,
+) -> Response {
+    if let Err(e) = req.validate() {
+        return st.err_response(&headers, e);
+    }
+    let ip = match client_ip_from(&st, peer, &headers) {
+        Ok(v) => v,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    let router = st.router.clone();
+    let model_id = req.model.clone();
+    match run_paid_multimodal(&st, &ip, &headers, &model_id, |m, pool| async move {
+        router.call_music_with_pool(&m, &req, &pool).await
+    })
+    .await
+    {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_video_generations(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(req): Json<VideoGenReq>,
+) -> Response {
+    if let Err(e) = req.validate() {
+        return st.err_response(&headers, e);
+    }
+    let ip = match client_ip_from(&st, peer, &headers) {
+        Ok(v) => v,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    let router = st.router.clone();
+    let model_id = req.model.clone();
+    match run_paid_multimodal(&st, &ip, &headers, &model_id, |m, pool| async move {
+        router.call_video_with_pool(&m, &req, &pool).await
+    })
+    .await
+    {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+pub async fn api_video_operation(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(op): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let ip = match client_ip_from(&st, peer, &headers) {
+        Ok(v) => v,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    if let Err(e) = st.risk.check_ip(&ip) {
+        return st.err_response(&headers, e);
+    }
+    let Some(raw_key) = AppState::extract_bearer(&headers) else {
+        st.risk.record_auth_failure(&ip);
+        return st.err_response(&headers, RelayError::Unauthorized("missing bearer api key".into()));
+    };
+    if let Err(e) = st.ledger.verify_api_key(&raw_key, "veo-2.0-generate-001").await {
+        return st.err_response(&headers, e);
+    }
+    let pool = st.ledger.find_live_channels("veo-2.0-generate-001").await.unwrap_or_default();
+    match st.router.poll_video_with_pool(&op, &pool).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => st.err_response(&headers, e),
     }

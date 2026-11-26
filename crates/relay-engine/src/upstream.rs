@@ -2,12 +2,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
 use relay_core::{
-    ChannelConfig, ChannelProbeResult, ChatReq, ModelConfig, ModelsCatalog, RelayError, TokenUsage,
+    AudioSpeechReq, ChannelConfig, ChannelProbeResult, ChatReq, ImageGenReq, MediaProtocol,
+    ModelConfig, ModelsCatalog, MusicGenReq, RelayError, TokenUsage, VideoGenReq,
 };
 use reqwest::Client;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 
+use crate::gemini_adapter;
 use crate::ledger::LiveChannel;
 
 /// Sanitized upstream completion reply (4 fields, Rule of 4).
@@ -535,6 +537,29 @@ impl UpstreamRouter {
             obj.insert("model".into(), serde_json::Value::String(model.upstream_model.clone()));
         }
         let mut last_err = None;
+        let is_gemini_img = path_suffix.trim_start_matches('/') == "images/generations"
+            && MediaProtocol::detect(&model.upstream_model).is_gemini_native();
+        if is_gemini_img
+            && let Ok(img_req) = serde_json::from_value::<ImageGenReq>(payload.clone())
+        {
+            for ch in pool.iter().filter(|c| gemini_adapter::is_gemini_channel(c)) {
+                if self.is_cooled(&ch.id) {
+                    continue;
+                }
+                match gemini_adapter::generate_image(&self.client, ch, &model.upstream_model, &img_req).await {
+                    Ok(v) => return Ok(v),
+                    Err(e) => {
+                        if e.to_string().contains("429") || e.to_string().contains("50") {
+                            self.trip_cooldown(&ch.id, 60);
+                        }
+                        last_err = Some(e);
+                    }
+                }
+            }
+            return Err(last_err.unwrap_or_else(|| {
+                RelayError::UpstreamFailed("no live gemini channel available for native image".into())
+            }));
+        }
         for ch in pool {
             if self.is_cooled(&ch.id) {
                 continue;
@@ -568,6 +593,94 @@ impl UpstreamRouter {
             }
         }
         Err(last_err.unwrap_or_else(|| RelayError::UpstreamFailed("no live upstream channel".into())))
+    }
+
+    /// Dispatch native Gemini TTS (`/v1/audio/speech`) across live Gemini channel pool.
+    pub async fn call_speech_with_pool(
+        &self,
+        model: &ModelConfig,
+        req: &AudioSpeechReq,
+        pool: &[LiveChannel],
+    ) -> Result<serde_json::Value, RelayError> {
+        let mut last_err = None;
+        for ch in pool.iter().filter(|c| gemini_adapter::is_gemini_channel(c)) {
+            if self.is_cooled(&ch.id) {
+                continue;
+            }
+            match gemini_adapter::generate_speech(&self.client, ch, &model.upstream_model, req).await {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    self.trip_cooldown(&ch.id, 45);
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| RelayError::UpstreamFailed("no live gemini tts channel".into())))
+    }
+
+    /// Dispatch native Lyria music generation (`/v1/music/generations`) across live Gemini pool.
+    pub async fn call_music_with_pool(
+        &self,
+        model: &ModelConfig,
+        req: &MusicGenReq,
+        pool: &[LiveChannel],
+    ) -> Result<serde_json::Value, RelayError> {
+        let mut last_err = None;
+        for ch in pool.iter().filter(|c| gemini_adapter::is_gemini_channel(c)) {
+            if self.is_cooled(&ch.id) {
+                continue;
+            }
+            match gemini_adapter::generate_music(&self.client, ch, &model.upstream_model, req).await {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    self.trip_cooldown(&ch.id, 45);
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| RelayError::UpstreamFailed("no live gemini music channel".into())))
+    }
+
+    /// Start async Veo video generation (`/v1/videos/generations`) across live Gemini pool.
+    pub async fn call_video_with_pool(
+        &self,
+        model: &ModelConfig,
+        req: &VideoGenReq,
+        pool: &[LiveChannel],
+    ) -> Result<serde_json::Value, RelayError> {
+        let mut last_err = None;
+        for ch in pool.iter().filter(|c| gemini_adapter::is_gemini_channel(c)) {
+            if self.is_cooled(&ch.id) {
+                continue;
+            }
+            match gemini_adapter::start_video_job(&self.client, ch, &model.upstream_model, req).await {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    self.trip_cooldown(&ch.id, 45);
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| RelayError::UpstreamFailed("no live gemini video channel".into())))
+    }
+
+    /// Poll async Veo operation status across live Gemini pool.
+    pub async fn poll_video_with_pool(
+        &self,
+        operation: &str,
+        pool: &[LiveChannel],
+    ) -> Result<serde_json::Value, RelayError> {
+        let mut last_err = None;
+        for ch in pool.iter().filter(|c| gemini_adapter::is_gemini_channel(c)) {
+            if self.is_cooled(&ch.id) {
+                continue;
+            }
+            match gemini_adapter::poll_video_job(&self.client, ch, operation).await {
+                Ok(v) => return Ok(v),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| RelayError::UpstreamFailed("no live gemini channel for poll".into())))
     }
 
     /// Measure upstream channel connectivity latency in milliseconds.

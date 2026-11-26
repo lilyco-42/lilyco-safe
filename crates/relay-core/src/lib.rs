@@ -1,9 +1,11 @@
 pub mod config;
 pub mod error;
+pub mod multimodal;
 pub mod types;
 
 pub use config::{ChannelConfig, GatewayConfig, I18nBundle, ModelConfig, ModelsCatalog};
 pub use error::{ErrorBody, RelayError};
+pub use multimodal::{AudioSpeechReq, MediaProtocol, MusicGenReq, VideoGenReq};
 pub use types::{
     ActivateTrialReq, AdminRoleUpdateReq, AdminUserSummary, AnthropicMsgReq, ChannelEndpoint,
     ChannelProbeResult, ChannelRouting, ChannelUpsertReq, ChatContent, ChatMessage, ChatReq,

@@ -379,3 +379,69 @@ upstream_model = "imagen-3.0-generate-002"
 input_per_m = 40
 output_per_m = 40
 allow_free = false
+
+# === Google AI Studio 原生多模态全家桶（Nano Banana / Imagen 4 / TTS / Lyria / Veo） ===
+
+[[models]]
+id = "gemini-2.5-flash-image"
+channel_id = "gemini-aistudio"
+upstream_model = "gemini-2.5-flash-image"
+input_per_m = 10
+output_per_m = 30
+allow_free = false
+
+[[models]]
+id = "free:gemini-2.5-flash-image"
+channel_id = "gemini-aistudio-free"
+upstream_model = "gemini-2.5-flash-image"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+[[models]]
+id = "imagen-4.0-generate-001"
+channel_id = "gemini-aistudio"
+upstream_model = "imagen-4.0-generate-001"
+input_per_m = 50
+output_per_m = 50
+allow_free = false
+
+[[models]]
+id = "gemini-2.5-flash-preview-tts"
+channel_id = "gemini-aistudio"
+upstream_model = "gemini-2.5-flash-preview-tts"
+input_per_m = 10
+output_per_m = 20
+allow_free = false
+
+[[models]]
+id = "free:gemini-2.5-flash-preview-tts"
+channel_id = "gemini-aistudio-free"
+upstream_model = "gemini-2.5-flash-preview-tts"
+input_per_m = 0
+output_per_m = 0
+allow_free = true
+
+[[models]]
+id = "lyria-002"
+channel_id = "gemini-aistudio"
+upstream_model = "lyria-002"
+input_per_m = 40
+output_per_m = 40
+allow_free = false
+
+[[models]]
+id = "veo-2.0-generate-001"
+channel_id = "gemini-aistudio"
+upstream_model = "veo-2.0-generate-001"
+input_per_m = 100
+output_per_m = 100
+allow_free = false
+
+[[models]]
+id = "veo-3.0-generate-preview"
+channel_id = "gemini-aistudio"
+upstream_model = "veo-3.0-generate-preview"
+input_per_m = 150
+output_per_m = 150
+allow_free = false

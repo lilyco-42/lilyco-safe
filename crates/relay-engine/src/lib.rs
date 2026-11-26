@@ -1,3 +1,4 @@
+pub mod gemini_adapter;
 pub mod ledger;
 pub mod query;
 pub mod upstream;
