@@ -37,6 +37,7 @@ import { ModelsPanel } from "./components/ModelsPanel";
 import { TokensPanel } from "./components/TokensPanel";
 import { ChatPanel } from "./components/ChatPanel";
 import { ImageStudioPanel } from "./components/ImageStudioPanel";
+import { MultimodalStudioPanel } from "./components/MultimodalStudioPanel";
 import { BrowserAgentPanel } from "./components/BrowserAgentPanel";
 import { WorkflowHubPanel } from "./components/WorkflowHubPanel";
 import { WalletLogsPanel } from "./components/WalletLogsPanel";
@@ -48,6 +49,7 @@ type NavId =
   | "models"
   | "chat"
   | "images"
+  | "moss"
   | "workflows"
   | "browser"
   | "tokens"
@@ -62,6 +64,7 @@ const PAGE_TITLES: Record<NavId, string> = {
   models: "模型广场与费率",
   chat: "在线对话演练场",
   images: "AI 头像 & 我的世界 YSM 创作工坊",
+  moss: "MOSS 绘梦 · 多模态创作工坊",
   workflows: "商业化 AI 创作工作流中心",
   browser: "AI 浏览器助手 (ego-lite)",
   tokens: "API 令牌与客户端接入",
@@ -73,7 +76,15 @@ const PAGE_TITLES: Record<NavId, string> = {
 };
 
 export function App() {
-  const [nav, setNav] = useState<NavId>("dashboard");
+  const [nav, setNav] = useState<NavId>(() => (window.location.hash === "#moss" ? "moss" : "dashboard"));
+
+  useEffect(() => {
+    const onHash = () => {
+      if (window.location.hash === "#moss") setNav("moss");
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
   const [theme, setTheme] = useState<"light" | "dark">(
     () => (localStorage.getItem("lilyco-theme") as "light" | "dark") || "light",
   );
@@ -196,6 +207,16 @@ export function App() {
             <button className={`nav-item ${nav === "images" ? "active" : ""}`} onClick={() => setNav("images")}>
               <ImageIcon size={16} /> 头像 & YSM
               <span className="nav-badge">热门</span>
+            </button>
+            <button
+              className={`nav-item ${nav === "moss" ? "active" : ""}`}
+              onClick={() => {
+                setNav("moss");
+                window.history.replaceState(null, "", "#moss");
+              }}
+            >
+              <Sparkles size={16} /> MOSS 绘梦
+              <span className="nav-badge" style={{ background: "#dcfce7", color: "#15803d" }}>免费</span>
             </button>
             <button className={`nav-item ${nav === "workflows" ? "active" : ""}`} onClick={() => setNav("workflows")}>
               <Layers size={16} /> 创作工作流
@@ -360,6 +381,16 @@ export function App() {
               onToast={showToast}
             />
           )}
+          {nav === "moss" && (
+            <MultimodalStudioPanel
+              jwt={jwt}
+              isAdmin={isAdmin}
+              authed={authed}
+              apiKey={activeSecret}
+              onGoTokens={() => setNav("tokens")}
+              onToast={showToast}
+            />
+          )}
           {nav === "workflows" && (
             <WorkflowHubPanel
               apiKey={activeSecret}
@@ -396,6 +427,12 @@ export function App() {
               onToast={showToast}
             />
           )}
+          <footer className="site-beian-footer" aria-label="网站备案信息">
+            <span>© 2026 宿松县云枢智创数码信息科技服务工作室</span>
+            <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">
+              皖ICP备2025106854号-1
+            </a>
+          </footer>
         </main>
       </div>
 
