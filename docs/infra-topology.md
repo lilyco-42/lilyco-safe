@@ -16,7 +16,12 @@
 ## 2. 两台服务器与云资源分工
 
 ### 服务器 A：`8.153.102.122`（`lain42.top` — 入口网关 + 稳态堡垒）
-- **配置**：1.6 GiB RAM / 40 GB Disk（⚠️ **需关注磁盘水位，当前已 97%，建议定期清理旧日志/Docker 缓存并将大媒体迁移至 R2/Server B**）
+- **配置**：1.6 GiB RAM / 40 GB Disk（已通过 `/etc/cron.daily/lain42-disk-hygiene` 治理，当前 **83%，7.0 GB 可用**）
+- **重要网页文件与数据审计**：
+  - `/var/www/studio/downloads`（5.3 GB）：活业务软件镜像（后续可逐步迁 Cloudflare R2）
+  - `/root/lyco/data/media`（2.1 GB）：`lyco-web` 活媒体数据
+  - Docker 运行中容器：`new-api` (`:3000`)、`postgres`、`lysource` (`:8790`)、`redis`（旧业务依赖，严禁盲删）
+  - 可选进一步释放项（待确认）：`/root/.rustup`（1.5 GB，生产机无需编 Rust）
 - **核心常驻服务**：
   - `pingap.service` (`:80`, `:443`) — 全站统一反代与 TLS
   - `studio-billing.service` (`127.0.0.1:4700`) — 商业订单与激活
