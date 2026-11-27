@@ -13,6 +13,8 @@ import {
   LogIn,
   LogOut,
   Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
   Server,
   ShieldAlert,
   Sparkles,
@@ -59,20 +61,20 @@ type NavId =
   | "admin-users"
   | "admin-risk";
 
-const PAGE_TITLES: Record<NavId, string> = {
-  dashboard: "数据看板与权限概览",
-  models: "模型广场与费率",
-  chat: "在线对话演练场",
-  images: "AI 头像 & 我的世界 YSM 创作工坊",
-  moss: "MOSS 绘梦 · 多模态创作工坊",
-  workflows: "商业化 AI 创作工作流中心",
-  browser: "AI 浏览器助手 (ego-lite)",
-  tokens: "API 令牌与客户端接入",
-  wallet: "钱包、充值与推广返佣",
-  logs: "调用与计费日志",
-  "admin-channels": "管理控制台 · 渠道 Key 池",
-  "admin-users": "管理控制台 · 用户与 RBAC 权限",
-  "admin-risk": "管理控制台 · 风控与兑换码",
+const PAGE_META: Record<NavId, { group: string; title: string }> = {
+  dashboard: { group: "控制台", title: "数据看板与权限概览" },
+  models: { group: "控制台", title: "模型广场与费率" },
+  chat: { group: "创作工坊", title: "在线对话演练场" },
+  images: { group: "创作工坊", title: "AI 头像 & 我的世界 YSM 创作工坊" },
+  moss: { group: "创作工坊", title: "MOSS 绘梦 · 多模态创作工坊" },
+  workflows: { group: "创作工坊", title: "商业化 AI 创作工作流中心" },
+  browser: { group: "创作工坊", title: "AI 浏览器助手 (ego-lite)" },
+  tokens: { group: "接入与计费", title: "API 令牌与客户端接入" },
+  wallet: { group: "接入与计费", title: "钱包、充值与推广返佣" },
+  logs: { group: "接入与计费", title: "调用与计费日志" },
+  "admin-channels": { group: "系统管理", title: "渠道 Key 池 · 实时价目 · 发卡" },
+  "admin-users": { group: "系统管理", title: "用户与 RBAC 权限" },
+  "admin-risk": { group: "系统管理", title: "风控与兑换码" },
 };
 
 export function App() {
@@ -88,6 +90,16 @@ export function App() {
   const [theme, setTheme] = useState<"light" | "dark">(
     () => (localStorage.getItem("lilyco-theme") as "light" | "dark") || "light",
   );
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(
+    () => localStorage.getItem("lilyco-sidebar-collapsed") === "1",
+  );
+  const toggleSidebar = () => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      localStorage.setItem("lilyco-sidebar-collapsed", next ? "1" : "0");
+      return next;
+    });
+  };
   const [jwt, setJwt] = useState<string>(
     () => localStorage.getItem("lain42_studio_token") || localStorage.getItem("wb-token") || "",
   );
@@ -181,8 +193,8 @@ export function App() {
 
   return (
     <div className="app-shell">
-      {/* Left Enterprise Sidebar (new-api style) */}
-      <aside className="sidebar">
+      {/* Left Enterprise Sidebar (new-api style, collapsible) */}
+      <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
         <div className="sidebar-brand">
           <div className="brand-icon">L</div>
           <div className="brand-text">
@@ -193,87 +205,95 @@ export function App() {
 
         <nav className="sidebar-nav">
           <div className="nav-group">
-            <div className="nav-group-label">工作台</div>
-            <button className={`nav-item ${nav === "dashboard" ? "active" : ""}`} onClick={() => setNav("dashboard")}>
-              <LayoutDashboard size={16} /> 数据看板
+            <div className="nav-group-label">控制台</div>
+            <button title="数据看板" className={`nav-item ${nav === "dashboard" ? "active" : ""}`} onClick={() => setNav("dashboard")}>
+              <LayoutDashboard size={16} /> <span className="nav-label">数据看板</span>
             </button>
-            <button className={`nav-item ${nav === "models" ? "active" : ""}`} onClick={() => setNav("models")}>
-              <Sparkles size={16} /> 模型广场
+            <button title="模型广场" className={`nav-item ${nav === "models" ? "active" : ""}`} onClick={() => setNav("models")}>
+              <Sparkles size={16} /> <span className="nav-label">模型广场</span>
               <span className="nav-badge">{models.length}</span>
             </button>
-            <button className={`nav-item ${nav === "chat" ? "active" : ""}`} onClick={() => setNav("chat")}>
-              <Bot size={16} /> 对话演练场
-            </button>
-            <button className={`nav-item ${nav === "images" ? "active" : ""}`} onClick={() => setNav("images")}>
-              <ImageIcon size={16} /> 头像 & YSM
-              <span className="nav-badge">热门</span>
+          </div>
+
+          <div className="nav-group">
+            <div className="nav-group-label">创作工坊</div>
+            <button title="对话演练场" className={`nav-item ${nav === "chat" ? "active" : ""}`} onClick={() => setNav("chat")}>
+              <Bot size={16} /> <span className="nav-label">对话演练场</span>
             </button>
             <button
+              title="MOSS 绘梦"
               className={`nav-item ${nav === "moss" ? "active" : ""}`}
               onClick={() => {
                 setNav("moss");
                 window.history.replaceState(null, "", "#moss");
               }}
             >
-              <Sparkles size={16} /> MOSS 绘梦
+              <Sparkles size={16} /> <span className="nav-label">MOSS 绘梦</span>
               <span className="nav-badge" style={{ background: "#dcfce7", color: "#15803d" }}>免费</span>
             </button>
-            <button className={`nav-item ${nav === "workflows" ? "active" : ""}`} onClick={() => setNav("workflows")}>
-              <Layers size={16} /> 创作工作流
+            <button title="头像 & YSM" className={`nav-item ${nav === "images" ? "active" : ""}`} onClick={() => setNav("images")}>
+              <ImageIcon size={16} /> <span className="nav-label">头像 & YSM</span>
+              <span className="nav-badge">热门</span>
+            </button>
+            <button title="创作工作流" className={`nav-item ${nav === "workflows" ? "active" : ""}`} onClick={() => setNav("workflows")}>
+              <Layers size={16} /> <span className="nav-label">创作工作流</span>
               <span className="nav-badge">PRO</span>
             </button>
-            <button className={`nav-item ${nav === "browser" ? "active" : ""}`} onClick={() => setNav("browser")}>
-              <Globe size={16} /> 浏览器助手
+            <button title="浏览器助手" className={`nav-item ${nav === "browser" ? "active" : ""}`} onClick={() => setNav("browser")}>
+              <Globe size={16} /> <span className="nav-label">浏览器助手</span>
               <span className="nav-badge">ego</span>
             </button>
           </div>
 
           <div className="nav-group">
             <div className="nav-group-label">接入与计费</div>
-            <button className={`nav-item ${nav === "tokens" ? "active" : ""}`} onClick={() => setNav("tokens")}>
-              <KeyRound size={16} /> 令牌管理
+            <button title="令牌管理" className={`nav-item ${nav === "tokens" ? "active" : ""}`} onClick={() => setNav("tokens")}>
+              <KeyRound size={16} /> <span className="nav-label">令牌管理</span>
               {authed && <span className="nav-badge">{me?.keys?.length ?? 0}</span>}
             </button>
-            <button className={`nav-item ${nav === "wallet" ? "active" : ""}`} onClick={() => setNav("wallet")}>
-              <Coins size={16} /> 钱包与充值
+            <button title="钱包与充值" className={`nav-item ${nav === "wallet" ? "active" : ""}`} onClick={() => setNav("wallet")}>
+              <Coins size={16} /> <span className="nav-label">钱包与充值</span>
             </button>
-            <button className={`nav-item ${nav === "logs" ? "active" : ""}`} onClick={() => setNav("logs")}>
-              <History size={16} /> 调用日志
+            <button title="调用日志" className={`nav-item ${nav === "logs" ? "active" : ""}`} onClick={() => setNav("logs")}>
+              <History size={16} /> <span className="nav-label">调用日志</span>
             </button>
           </div>
 
           <div className="nav-group">
-            <div className="nav-group-label">管理控制台</div>
+            <div className="nav-group-label">系统管理</div>
             <button
+              title="渠道与价目表"
               className={`nav-item ${nav === "admin-channels" ? "active" : ""}`}
               onClick={() => setNav("admin-channels")}
             >
-              <Server size={16} /> 渠道 Key 池
+              <Server size={16} /> <span className="nav-label">渠道与价目</span>
             </button>
             <button
+              title="用户与权限"
               className={`nav-item ${nav === "admin-users" ? "active" : ""}`}
               onClick={() => setNav("admin-users")}
             >
-              <UserCog size={16} /> 用户与权限
+              <UserCog size={16} /> <span className="nav-label">用户与权限</span>
               <span className="nav-badge">RBAC</span>
             </button>
             <button
+              title="风控与兑换码"
               className={`nav-item ${nav === "admin-risk" ? "active" : ""}`}
               onClick={() => setNav("admin-risk")}
             >
-              <ShieldAlert size={16} /> 风控与兑换码
+              <ShieldAlert size={16} /> <span className="nav-label">风控与兑换码</span>
             </button>
           </div>
         </nav>
 
         <div className="sidebar-footer">
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-            <span>网关状态</span>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: sidebarCollapsed ? "center" : "space-between", marginBottom: sidebarCollapsed ? 0 : 4 }}>
+            <span className="sidebar-footer-detail">网关状态</span>
             <span className="pill pill-ok" style={{ padding: "1px 7px", fontSize: 11 }}>
-              {health?.ok ? "在线" : "连接中"}
+              {health?.ok ? "在线" : "..."}
             </span>
           </div>
-          <div className="mono" style={{ fontSize: 11 }}>
+          <div className="mono sidebar-footer-detail" style={{ fontSize: 11 }}>
             lilyco-safe · {health?.license || "MIT"}
           </div>
         </div>
@@ -283,7 +303,20 @@ export function App() {
       <div className="main-area">
         <header className="topbar">
           <div className="topbar-left">
-            <h1 className="page-title">{PAGE_TITLES[nav]}</h1>
+            <button
+              type="button"
+              className="btn btn-sm"
+              style={{ padding: "5px 7px" }}
+              title={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
+              onClick={toggleSidebar}
+            >
+              {sidebarCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+            </button>
+            <div className="breadcrumb">
+              <span>{PAGE_META[nav].group}</span>
+              <span className="breadcrumb-sep">/</span>
+              <h1 className="page-title">{PAGE_META[nav].title}</h1>
+            </div>
           </div>
 
           <div className="topbar-right">
