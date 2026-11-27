@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -5,9 +6,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64::Engine;
 use relay_core::{
     AdminRoleUpdateReq, AdminUserSummary, AsyncTaskMeta, AsyncTaskRecord, AsyncTaskResult,
-    BillingMode, ChannelPolicy, ChannelUpsertReq, KeyIssueReq, KeyScope, ModelPricingOverride,
-    ModelRateSpec, RedemptionCreateReq, RelayError, ResellKeyBatchReq, TokenUsage, TrialCardItem,
-    UsageLogItem, UserRole, UserRolePolicy,
+    BillingMode, ChannelPolicy, ChannelUpsertReq, KeyIssueReq, KeyScope, KeyUpdateReq,
+    ModelPricingOverride, ModelRateSpec, ModelUsageBreakdown, RedemptionCreateReq,
+    RedemptionRecord, RelayError, ResellKeyBatchReq, TokenUsage, TrialCardItem, UsageLogItem,
+    UserRole, UserRolePolicy,
 };
 use ring::digest::{digest, SHA256};
 use secrecy::SecretString;
@@ -246,6 +248,11 @@ impl RelayLedger {
                 credits_charged INTEGER NOT NULL DEFAULT 0,
                 result_json TEXT NOT NULL DEFAULT '{}',
                 created_unix INTEGER NOT NULL,
+                updated_unix INTEGER NOT NULL
+            )",
+            "CREATE TABLE IF NOT EXISTS relay_options (
+                opt_key TEXT PRIMARY KEY,
+                opt_val TEXT NOT NULL DEFAULT '',
                 updated_unix INTEGER NOT NULL
             )",
         ];
@@ -1275,6 +1282,173 @@ impl RelayLedger {
         })
     }
 
+    /// Update an existing API key's name, quota limit, active toggle, or scope restrictions.
+    pub async fn update_key(
+        &self,
+        username: &str,
+        key_id: &str,
+        req: &KeyUpdateReq,
+    ) -> Result<(), RelayError> {
+        let u = username.trim().to_ascii_lowercase();
+        let kid = key_id.trim();
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT name, quota_limit, active, allowed_models, allowed_ips, expired_unix FROM relay_keys WHERE id = ?1 AND username = ?2",
+                (kid, u.as_str()),
+            )
+            .await
+            .map_err(map_db)?;
+        let Some(row) = rows.next().await.map_err(map_db)? else {
+            return Err(RelayError::ModelNotFound(format!("key {kid} not found")));
+        };
+        let name = req.name.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&col_str(&row, 0)).to_string();
+        let quota = req.quota_limit.unwrap_or_else(|| col_u64(&row, 1));
+        let active = req.active.map(i64::from).unwrap_or_else(|| col_u64(&row, 2) as i64);
+        let allowed_models = req
+            .scope
+            .as_ref()
+            .map(|s| s.allowed_models.join(","))
+            .unwrap_or_else(|| col_str(&row, 3));
+        let allowed_ips = req
+            .scope
+            .as_ref()
+            .map(|s| s.allowed_ips.trim().to_string())
+            .unwrap_or_else(|| col_str(&row, 4));
+        let expired_unix = req
+            .scope
+            .as_ref()
+            .map(|s| s.expired_unix)
+            .unwrap_or_else(|| col_u64(&row, 5) as i64);
+        self.conn
+            .execute(
+                "UPDATE relay_keys SET name=?1, quota_limit=?2, active=?3, allowed_models=?4, allowed_ips=?5, expired_unix=?6 WHERE id=?7 AND username=?8",
+                (name.as_str(), quota as i64, active, allowed_models.as_str(), allowed_ips.as_str(), expired_unix, kid, u.as_str()),
+            )
+            .await
+            .map_err(map_db)?;
+        Ok(())
+    }
+
+    /// Quick enable/disable toggle for a channel without resubmitting credentials.
+    pub async fn toggle_channel(&self, id: &str, enabled: bool) -> Result<(), RelayError> {
+        self.conn
+            .execute(
+                "UPDATE relay_channels SET enabled = ?1 WHERE id = ?2",
+                (i64::from(enabled), id.trim()),
+            )
+            .await
+            .map_err(map_db)?;
+        Ok(())
+    }
+
+    pub async fn list_redemptions(&self, limit: i64) -> Result<Vec<RedemptionRecord>, RelayError> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT code, credits, wallet_type, used_by FROM relay_redemptions ORDER BY created_unix DESC LIMIT ?1",
+                [limit.clamp(1, 200)],
+            )
+            .await
+            .map_err(map_db)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(map_db)? {
+            out.push(RedemptionRecord {
+                code: col_str(&row, 0),
+                credits: col_u64(&row, 1),
+                wallet_type: col_str(&row, 2),
+                used_by: col_str(&row, 3),
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn delete_redemption(&self, code: &str) -> Result<(), RelayError> {
+        let c = code.trim().to_ascii_uppercase();
+        self.conn
+            .execute("DELETE FROM relay_redemptions WHERE code = ?1 AND used_by = ''", [c.as_str()])
+            .await
+            .map_err(map_db)?;
+        Ok(())
+    }
+
+    pub async fn get_options(&self) -> Result<HashMap<String, String>, RelayError> {
+        let mut rows = self
+            .conn
+            .query("SELECT opt_key, opt_val FROM relay_options", ())
+            .await
+            .map_err(map_db)?;
+        let mut map = HashMap::new();
+        while let Some(row) = rows.next().await.map_err(map_db)? {
+            map.insert(col_str(&row, 0), col_str(&row, 1));
+        }
+        Ok(map)
+    }
+
+    pub async fn set_option(&self, key: &str, value: &str) -> Result<(), RelayError> {
+        let k = key.trim();
+        if k.is_empty() || k.len() > 64 {
+            return Err(RelayError::InvalidInput("option key must be 1..64 chars".into()));
+        }
+        self.conn
+            .execute(
+                "INSERT INTO relay_options (opt_key, opt_val, updated_unix) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(opt_key) DO UPDATE SET opt_val=excluded.opt_val, updated_unix=excluded.updated_unix",
+                (k, value, now_unix()),
+            )
+            .await
+            .map_err(map_db)?;
+        Ok(())
+    }
+
+    /// Per-model usage breakdown (top models by requests/tokens/credits) for charts.
+    pub async fn usage_breakdown_by_model(
+        &self,
+        username: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<ModelUsageBreakdown>, RelayError> {
+        let lim = limit.clamp(1, 50);
+        let mut rows = match username {
+            Some(u) => {
+                let low = u.trim().to_ascii_lowercase();
+                self.conn
+                    .query(
+                        "SELECT model, COUNT(*), COALESCE(SUM(prompt_tokens + completion_tokens),0), COALESCE(SUM(credits_charged),0)
+                         FROM relay_usage_logs WHERE username = ?1 GROUP BY model ORDER BY COUNT(*) DESC LIMIT ?2",
+                        (low.as_str(), lim),
+                    )
+                    .await
+                    .map_err(map_db)?
+            }
+            None => self
+                .conn
+                .query(
+                    "SELECT model, COUNT(*), COALESCE(SUM(prompt_tokens + completion_tokens),0), COALESCE(SUM(credits_charged),0)
+                     FROM relay_usage_logs GROUP BY model ORDER BY COUNT(*) DESC LIMIT ?1",
+                    [lim],
+                )
+                .await
+                .map_err(map_db)?,
+        };
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(map_db)? {
+            out.push(ModelUsageBreakdown {
+                model: col_str(&row, 0),
+                requests: col_u64(&row, 1),
+                tokens: col_u64(&row, 2),
+                credits: col_u64(&row, 3),
+            });
+        }
+        Ok(out)
+    }
+
+    /// Resolve API key + owner wallet for OpenAI-compatible `/v1/dashboard/billing/*` endpoints.
+    pub async fn verify_key_for_billing(&self, raw_key: &str) -> Result<(ApiKeyRecord, UserWallet), RelayError> {
+        let verified = self.verify_api_key(raw_key, "").await?;
+        let wallet = self.get_wallet(&verified.record.username).await?;
+        Ok((verified.record, wallet))
+    }
+
     /// Mint a batch of pre-funded ready-to-sell API keys backed by an isolated batch wallet.
     pub async fn mint_resell_key_batch(
         &self,
@@ -1491,5 +1665,53 @@ mod tests {
         let fetched = db.get_async_task(&task.id).await.unwrap();
         assert_eq!(fetched.status, "succeeded");
         assert_eq!(db.list_async_tasks(Some("alice"), 10).await.unwrap().len(), 1);
+
+        // Channel toggle, system options, redemptions list/delete, key update & billing summary
+        db.toggle_channel("ch-map-1", false).await.unwrap();
+        assert!(db.find_live_channels("deepseek-v3").await.unwrap().is_empty());
+        db.set_option("site_notice", "维护公告").await.unwrap();
+        assert_eq!(db.get_options().await.unwrap().get("site_notice").map(String::as_str), Some("维护公告"));
+
+        let codes = db
+            .create_redemptions(&RedemptionCreateReq {
+                count: 1,
+                credits: 50,
+                wallet_type: "paid".into(),
+                prefix: "OPT".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(db.list_redemptions(10).await.unwrap().len(), 1);
+        db.delete_redemption(&codes[0]).await.unwrap();
+        assert_eq!(db.list_redemptions(10).await.unwrap().len(), 0);
+
+        db.sync_portal_wallet("alice", 300).await.unwrap();
+        let (k_sec, k_rec) = db
+            .issue_key(
+                "alice",
+                &KeyIssueReq {
+                    name: "old".into(),
+                    quota_limit: 100,
+                    rpm_limit: 30,
+                    scope: KeyScope::default(),
+                },
+            )
+            .await
+            .unwrap();
+        db.update_key(
+            "alice",
+            &k_rec.id,
+            &KeyUpdateReq {
+                name: Some("renamed".into()),
+                quota_limit: Some(500),
+                active: Some(true),
+                scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        let (bill_k, bill_w) = db.verify_key_for_billing(&k_sec).await.unwrap();
+        assert_eq!(bill_k.quota_limit, 500);
+        assert_eq!(bill_w.paid_credits, 300);
     }
 }

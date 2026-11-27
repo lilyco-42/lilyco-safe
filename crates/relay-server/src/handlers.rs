@@ -66,7 +66,7 @@ pub struct McpParams {
     pub name: Option<String>,
 }
 
-fn client_ip_from(state: &AppState, peer: SocketAddr, headers: &HeaderMap) -> Result<ClientIp, RelayError> {
+pub(crate) fn client_ip_from(state: &AppState, peer: SocketAddr, headers: &HeaderMap) -> Result<ClientIp, RelayError> {
     let xff = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
     state.risk.resolve_ip(&peer.ip().to_string(), xff)
 }
@@ -325,9 +325,17 @@ pub async fn api_openai_chat(
 pub async fn api_anthropic_messages(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
+    mut headers: HeaderMap,
     Json(req): Json<AnthropicMsgReq>,
 ) -> Response {
+    // Support native Anthropic `x-api-key` header in addition to `Authorization: Bearer` (for Claude Code).
+    if AppState::extract_bearer(&headers).is_none()
+        && let Some(raw) = headers.get("x-api-key").and_then(|v| v.to_str().ok()).map(str::trim)
+        && !raw.is_empty()
+        && let Ok(val) = HeaderValue::from_str(&format!("Bearer {raw}"))
+    {
+        headers.insert(header::AUTHORIZATION, val);
+    }
     let ip = match client_ip_from(&st, peer, &headers) {
         Ok(v) => v,
         Err(e) => return st.err_response(&headers, e),
@@ -355,7 +363,7 @@ pub async fn api_anthropic_messages(
     .into_response()
 }
 
-async fn resolve_portal_user(st: &AppState, headers: &HeaderMap) -> Result<String, RelayError> {
+pub(crate) async fn resolve_portal_user(st: &AppState, headers: &HeaderMap) -> Result<String, RelayError> {
     let tok = AppState::extract_bearer(headers)
         .ok_or_else(|| RelayError::Unauthorized("missing portal token".into()))?;
     let verify_url = &st.runtime.cfg.server.portal_verify_url;
@@ -386,7 +394,7 @@ async fn resolve_portal_user(st: &AppState, headers: &HeaderMap) -> Result<Strin
 }
 
 /// Allow admin access via either `X-Admin-Key` header OR an authenticated `admin`-role JWT.
-async fn verify_admin_access(st: &AppState, headers: &HeaderMap) -> Result<(), RelayError> {
+pub(crate) async fn verify_admin_access(st: &AppState, headers: &HeaderMap) -> Result<(), RelayError> {
     if st.verify_admin(headers).is_ok() {
         return Ok(());
     }

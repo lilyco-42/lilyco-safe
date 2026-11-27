@@ -1,4 +1,5 @@
 pub mod handlers;
+pub mod handlers_compat;
 mod model_companies;
 pub mod state;
 pub mod ysm_catalog;
@@ -9,7 +10,7 @@ use std::sync::Arc;
 use axum::http::{HeaderValue, header};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Router, extract::Request};
 use relay_core::{GatewayConfig, I18nBundle, ModelsCatalog, RelayError};
 use relay_engine::{RelayLedger, UpstreamRouter};
@@ -85,15 +86,24 @@ fn proxy_routes() -> Router<AppState> {
         .route("/v1/model-companies", get(handlers::api_model_companies))
         .route("/v1/models/{model}", get(handlers::api_get_model))
         .route("/v1/chat/completions", post(handlers::api_openai_chat))
+        .route("/v1/completions", post(handlers_compat::api_openai_completions))
         .route("/v1/responses", post(handlers::api_openai_responses))
         .route("/v1/messages", post(handlers::api_anthropic_messages))
+        .route("/v1/messages/count_tokens", post(handlers_compat::api_anthropic_count_tokens))
         .route("/v1beta/models/{*model_action}", post(handlers::api_gemini_v1beta))
         .route("/v1/embeddings", post(handlers::api_embeddings))
+        .route("/v1/moderations", post(handlers_compat::api_openai_moderations))
         .route("/v1/images/generations", post(handlers::api_images))
+        .route("/v1/images/edits", post(handlers_compat::api_images_edits))
         .route("/v1/audio/speech", post(handlers::api_audio_speech))
+        .route("/v1/audio/transcriptions", post(handlers_compat::api_audio_transcriptions))
+        .route("/v1/audio/translations", post(handlers_compat::api_audio_translations))
         .route("/v1/music/generations", post(handlers::api_music_generations))
         .route("/v1/videos/generations", post(handlers::api_video_generations))
         .route("/v1/videos/operations/{*op}", get(handlers::api_video_operation))
+        .route("/v1/dashboard/billing/subscription", get(handlers_compat::api_billing_subscription))
+        .route("/v1/dashboard/billing/usage", get(handlers_compat::api_billing_usage))
+        .route("/v1/dashboard/billing/credit_grants", get(handlers_compat::api_billing_credit_grants))
         .route("/v1/ysm/generations", post(handlers::api_ysm))
         .route("/api/v1/ysm/catalog", get(ysm_catalog::api_ysm_catalog))
         .route("/v1/rerank", post(handlers::api_rerank))
@@ -106,17 +116,23 @@ fn admin_routes(web_dir: String) -> Router<AppState> {
         .route("/api/v1/auth/register", post(handlers::api_portal_register))
         .route("/api/v1/me", get(handlers::api_me))
         .route("/api/v1/trial-cards/activate", post(handlers::api_activate_trial_card))
+        .route("/api/v1/pricing", get(handlers_compat::api_public_pricing))
+        .route("/api/v1/options/public", get(handlers_compat::api_public_options))
         .route("/api/v1/dashboard/stats", get(handlers::api_dashboard_stats))
+        .route("/api/v1/dashboard/breakdown", get(handlers_compat::api_dashboard_breakdown))
         .route("/api/v1/logs", get(handlers::api_usage_logs))
         .route("/api/v1/tasks", get(handlers::api_list_tasks))
         .route("/api/v1/tasks/{id}", get(handlers::api_get_task))
         .route("/api/v1/keys", post(handlers::api_issue_key))
+        .route("/api/v1/keys/{id}", put(handlers_compat::api_update_key))
         .route("/api/v1/keys/revoke", post(handlers::api_revoke_key))
         .route("/api/v1/redeem", post(handlers::api_redeem))
         .route("/api/v1/affiliate/bind", post(handlers::api_bind_affiliate))
         .route("/api/v1/affiliate/transfer", post(handlers::api_affiliate_transfer))
         .route("/api/v1/admin/channels", get(handlers::api_admin_list_channels).post(handlers::api_admin_upsert_channel))
+        .route("/api/v1/admin/channels/probe-all", post(handlers_compat::api_admin_probe_all_channels))
         .route("/api/v1/admin/channels/{id}", delete(handlers::api_admin_delete_channel))
+        .route("/api/v1/admin/channels/{id}/toggle", patch(handlers_compat::api_admin_toggle_channel))
         .route("/api/v1/admin/channels/{id}/probe", post(handlers::api_admin_probe_channel))
         .route("/api/v1/admin/models/sync", post(handlers::api_admin_sync_models))
         .route("/api/v1/admin/models/pricing", post(handlers::api_admin_upsert_pricing))
@@ -124,7 +140,9 @@ fn admin_routes(web_dir: String) -> Router<AppState> {
         .route("/api/v1/admin/resell/keys", post(handlers::api_admin_mint_resell_keys))
         .route("/api/v1/admin/users", get(handlers::api_admin_list_users))
         .route("/api/v1/admin/users/role", post(handlers::api_admin_update_role))
-        .route("/api/v1/admin/redemptions", post(handlers::api_admin_create_redemptions))
+        .route("/api/v1/admin/redemptions", get(handlers_compat::api_admin_list_redemptions).post(handlers::api_admin_create_redemptions))
+        .route("/api/v1/admin/redemptions/{code}", delete(handlers_compat::api_admin_delete_redemption))
+        .route("/api/v1/admin/options", get(handlers_compat::api_admin_get_options).put(handlers_compat::api_admin_set_option))
         .route("/api/v1/admin/risk/block_ip", post(handlers::api_admin_block_ip))
         .route("/api/v1/admin/risk/unblock_ip", post(handlers::api_admin_unblock_ip))
         .route("/api/v1/admin/topup", post(handlers::api_admin_topup))

@@ -341,6 +341,8 @@ mod tests {
             input_per_m: 0,
             output_per_m: 0,
             allow_free: true,
+            billing_mode: relay_core::BillingMode::Token,
+            unit_credits: 0,
         }
     }
 

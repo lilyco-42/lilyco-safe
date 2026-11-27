@@ -884,6 +884,59 @@ impl UpstreamRouter {
         Err(last_err.unwrap_or_else(|| RelayError::UpstreamFailed("no live gemini channel available".into())))
     }
 
+    /// Passthrough raw binary/multipart payload (e.g. Whisper audio/transcriptions, images/edits) across live pool.
+    pub async fn forward_raw_bytes_with_pool(
+        &self,
+        path_suffix: &str,
+        content_type: &str,
+        raw_body: bytes::Bytes,
+        pool: &[LiveChannel],
+    ) -> Result<(u16, String, bytes::Bytes), RelayError> {
+        let mut last_err = None;
+        for ch in pool {
+            if self.is_cooled(&ch.id) || !self.try_consume_channel_quota(ch) {
+                continue;
+            }
+            let url = format!("{}/{}", ch.base_url.trim_end_matches('/'), path_suffix.trim_start_matches('/'));
+            match self
+                .client
+                .post(&url)
+                .header("content-type", content_type)
+                .bearer_auth(ch.api_key.expose_secret())
+                .body(raw_body.clone())
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    let code = resp.status().as_u16();
+                    let resp_ct = resp
+                        .headers()
+                        .get("content-type")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("application/json")
+                        .to_string();
+                    let out = resp
+                        .bytes()
+                        .await
+                        .map_err(|_| RelayError::UpstreamFailed("failed reading upstream bytes".into()))?;
+                    return Ok((code, resp_ct, out));
+                }
+                Ok(resp) => {
+                    let code = resp.status().as_u16();
+                    if code == 429 || code >= 500 {
+                        self.trip_cooldown(&ch.id, 60);
+                    }
+                    last_err = Some(RelayError::UpstreamFailed(format!("upstream {} HTTP {code}", ch.id)));
+                }
+                Err(_) => {
+                    self.trip_cooldown(&ch.id, 30);
+                    last_err = Some(RelayError::UpstreamFailed(format!("upstream {} timeout", ch.id)));
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| RelayError::UpstreamFailed("no live upstream channel".into())))
+    }
+
     /// Measure upstream channel connectivity latency in milliseconds.
     pub async fn probe_url(&self, base_url: &str) -> Result<u64, RelayError> {
         let start = std::time::Instant::now();

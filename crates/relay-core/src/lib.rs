@@ -9,8 +9,9 @@ pub use multimodal::{AudioSpeechReq, MediaProtocol, MusicGenReq, VideoGenReq};
 pub use types::{
     ActivateTrialReq, AdminRoleUpdateReq, AdminUserSummary, AnthropicMsgReq, AsyncTaskMeta,
     AsyncTaskRecord, AsyncTaskResult, ChannelEndpoint, ChannelPolicy, ChannelProbeResult,
-    ChannelRouting, ChannelUpsertReq, ChatContent, ChatMessage, ChatReq, ClientIp, ContentPart,
-    EmbeddingReq, ImageGenReq, ImageUrlPart, KeyIssueReq, KeyScope, ModelPricingOverride,
-    ModelRateSpec, PortalAuthReq, PricingRate, RedeemCodeReq, RedemptionCreateReq, RerankReq,
+    ChannelRouting, ChannelToggleReq, ChannelUpsertReq, ChatContent, ChatMessage, ChatReq,
+    ClientIp, ContentPart, EmbeddingReq, ImageGenReq, ImageUrlPart, KeyIssueReq, KeyScope,
+    KeyUpdateReq, ModelPricingOverride, ModelRateSpec, ModelUsageBreakdown, OptionUpdateReq,
+    PortalAuthReq, PricingRate, RedeemCodeReq, RedemptionCreateReq, RedemptionRecord, RerankReq,
     ResellKeyBatchReq, TokenUsage, TrialCardItem, UsageLogItem, UserRole, UserRolePolicy,
 };

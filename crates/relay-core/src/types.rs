@@ -366,6 +366,53 @@ pub struct AsyncTaskRecord {
     pub result: AsyncTaskResult,
 }
 
+/// User / Admin API key update payload (4 fields, Rule of 4, deny_unknown_fields).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeyUpdateReq {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub quota_limit: Option<u64>,
+    #[serde(default)]
+    pub active: Option<bool>,
+    #[serde(default)]
+    pub scope: Option<KeyScope>,
+}
+
+/// Admin channel quick enable/disable payload (1 field, deny_unknown_fields).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelToggleReq {
+    pub enabled: bool,
+}
+
+/// Admin system option key/value update payload (2 fields, deny_unknown_fields).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OptionUpdateReq {
+    pub key: String,
+    pub value: String,
+}
+
+/// Admin redemption code list item (4 fields, Rule of 4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedemptionRecord {
+    pub code: String,
+    pub credits: u64,
+    pub wallet_type: String,
+    pub used_by: String,
+}
+
+/// Per-model aggregated usage breakdown for analytics charts (4 fields, Rule of 4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelUsageBreakdown {
+    pub model: String,
+    pub requests: u64,
+    pub tokens: u64,
+    pub credits: u64,
+}
+
 /// Admin batch redemption code creation (<= 4 fields, deny_unknown_fields).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
