@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Film, KeyRound, Music, RefreshCw, Volume2 } from "lucide-react";
+import { fetchModels, type ModelItem } from "../../api";
 import {
   callRelayMusic,
   callRelaySpeech,
@@ -16,6 +17,7 @@ interface AudioVideoWorkbenchProps {
 }
 
 export function AudioVideoWorkbench({ apiKey, msg, onGoTokens, onToast }: AudioVideoWorkbenchProps) {
+  const [models, setModels] = useState<ModelItem[]>([]);
   const [ttsText, setTtsText] = useState("你好，欢迎使用云枢智创统一多模态引擎。");
   const [ttsVoice, setTtsVoice] = useState("Kore");
   const [ttsModel, setTtsModel] = useState("gemini-2.5-flash-preview-tts");
@@ -28,9 +30,18 @@ export function AudioVideoWorkbench({ apiKey, msg, onGoTokens, onToast }: AudioV
   const [musicBusy, setMusicBusy] = useState(false);
 
   const [videoPrompt, setVideoPrompt] = useState("Cherry blossom petals drifting across a seaside railway crossing at sunset, cinematic slow motion");
+  const [videoDuration, setVideoDuration] = useState<4 | 6 | 8>(4);
   const [videoOp, setVideoOp] = useState("");
   const [videoStatus, setVideoStatus] = useState("");
   const [videoBusy, setVideoBusy] = useState(false);
+
+  useEffect(() => {
+    fetchModels().then(setModels).catch(() => {});
+  }, []);
+
+  const lyriaCredits = models.find((m) => m.id === "lyria-002")?.unit_credits ?? 15;
+  const veoPerSec = models.find((m) => m.id === "veo-3.1-fast-generate-001")?.unit_credits ?? 20;
+  const veoTotalCredits = veoPerSec * videoDuration;
 
   if (!apiKey.trim()) {
     return (
@@ -95,7 +106,7 @@ export function AudioVideoWorkbench({ apiKey, msg, onGoTokens, onToast }: AudioV
         model: "veo-3.1-fast-generate-001",
         prompt: videoPrompt.trim(),
         aspect_ratio: "16:9",
-        duration_sec: 4,
+        duration_sec: videoDuration,
       });
       setVideoOp(res.operation);
       setVideoStatus(`已入队：${res.operation}`);
@@ -167,7 +178,7 @@ export function AudioVideoWorkbench({ apiKey, msg, onGoTokens, onToast }: AudioV
           onChange={(e) => setMusicPrompt(e.target.value)}
         />
         <button type="button" className="btn btn-primary" disabled={musicBusy} onClick={() => void runMusic()}>
-          {musicBusy ? msg.generating : `${msg.lyriaBtn} (15 积分)`}
+          {musicBusy ? msg.generating : `${msg.lyriaBtn} (${lyriaCredits} 积分/次)`}
         </button>
         {musicAudioUrl && <audio controls src={musicAudioUrl} style={{ width: "100%" }} />}
         {musicResult && <pre className="ms-code">{musicResult}</pre>}
@@ -187,8 +198,18 @@ export function AudioVideoWorkbench({ apiKey, msg, onGoTokens, onToast }: AudioV
           onChange={(e) => setVideoPrompt(e.target.value)}
         />
         <div className="ms-ctrl-row">
+          <select
+            className="input"
+            style={{ width: "auto" }}
+            value={videoDuration}
+            onChange={(e) => setVideoDuration(Number(e.target.value) as 4 | 6 | 8)}
+          >
+            <option value={4}>4 秒 ({veoPerSec * 4} 积分)</option>
+            <option value={6}>6 秒 ({veoPerSec * 6} 积分)</option>
+            <option value={8}>8 秒 ({veoPerSec * 8} 积分)</option>
+          </select>
           <button type="button" className="btn btn-primary" style={{ flex: 1 }} disabled={videoBusy} onClick={() => void runVideo()}>
-            {videoBusy ? msg.generating : `${msg.veoBtn} (Veo 3.1 · 80 积分)`}
+            {videoBusy ? msg.generating : `${msg.veoBtn} (${veoTotalCredits} 积分)`}
           </button>
           {videoOp && (
             <button type="button" className="btn" disabled={videoBusy} onClick={() => void checkVideo()}>

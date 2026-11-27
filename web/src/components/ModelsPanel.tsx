@@ -93,7 +93,7 @@ export function ModelsPanel({ models, discountPct, onTestModel, onToast }: Props
             <Sparkles size={17} color="var(--primary)" /> 模型广场与实时费率（{filtered.length} / {models.length}）
           </h3>
           <div style={{ fontSize: 12.5, color: "var(--text-muted)", marginTop: 3 }}>
-            兼容 OpenAI <span className="mono">/v1/chat/completions</span> 与 Anthropic <span className="mono">/v1/messages</span>
+            兼容 OpenAI <span className="mono">/v1/chat/completions</span> · <span className="mono">/v1/responses</span> · Anthropic <span className="mono">/v1/messages</span> · Gemini <span className="mono">/v1beta/models/*</span>
             {discountPct > 0 && (
               <span className="pill pill-vip" style={{ marginLeft: 8 }}>
                 已享 {100 - discountPct} 折 VIP 费率
@@ -180,12 +180,22 @@ export function ModelsPanel({ models, discountPct, onTestModel, onToast }: Props
                 <td>
                   {m.allow_free ? (
                     <span className="pill pill-ok">免费体验</span>
+                  ) : m.billing_mode === "per_second" ? (
+                    <span className="pill pill-vip">按秒计费</span>
+                  ) : m.billing_mode === "per_call" ? (
+                    <span className="pill pill-user">按次计费</span>
                   ) : (
                     <span className="pill pill-user">实付按量</span>
                   )}
                 </td>
                 <td>
-                  {m.input_per_m === 0 ? (
+                  {m.allow_free ? (
+                    <span style={{ color: "var(--success)", fontWeight: 700 }}>免费</span>
+                  ) : m.billing_mode === "per_second" ? (
+                    <b>{applyDisc(m.unit_credits || 20)} 积分 / 秒</b>
+                  ) : m.billing_mode === "per_call" ? (
+                    <b>{applyDisc(m.unit_credits || 1)} 积分 / 次</b>
+                  ) : m.input_per_m === 0 ? (
                     <span style={{ color: "var(--success)", fontWeight: 700 }}>免费</span>
                   ) : discountPct > 0 ? (
                     <span>
@@ -199,7 +209,11 @@ export function ModelsPanel({ models, discountPct, onTestModel, onToast }: Props
                   )}
                 </td>
                 <td>
-                  {m.output_per_m === 0 ? (
+                  {m.allow_free ? (
+                    <span style={{ color: "var(--success)", fontWeight: 700 }}>免费</span>
+                  ) : m.billing_mode === "per_second" || m.billing_mode === "per_call" ? (
+                    <span style={{ color: "var(--text-muted)", fontSize: 12 }}>—</span>
+                  ) : m.output_per_m === 0 ? (
                     <span style={{ color: "var(--success)", fontWeight: 700 }}>免费</span>
                   ) : discountPct > 0 ? (
                     <span>

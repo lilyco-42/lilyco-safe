@@ -379,6 +379,8 @@ upstream_model = "imagen-3.0-generate-002"
 input_per_m = 40
 output_per_m = 40
 allow_free = false
+billing_mode = "per_call"
+unit_credits = 10
 
 # === Google AI Studio 原生多模态全家桶（Nano Banana / Imagen 4 / TTS / Lyria / Veo） ===
 
@@ -389,6 +391,8 @@ upstream_model = "gemini-2.5-flash-image"
 input_per_m = 10
 output_per_m = 30
 allow_free = false
+billing_mode = "per_call"
+unit_credits = 5
 
 [[models]]
 id = "free:gemini-2.5-flash-image"
@@ -397,6 +401,8 @@ upstream_model = "gemini-2.5-flash-image"
 input_per_m = 0
 output_per_m = 0
 allow_free = true
+billing_mode = "per_call"
+unit_credits = 0
 
 [[models]]
 id = "imagen-4.0-generate-001"
@@ -405,6 +411,8 @@ upstream_model = "imagen-4.0-generate-001"
 input_per_m = 50
 output_per_m = 50
 allow_free = false
+billing_mode = "per_call"
+unit_credits = 10
 
 [[models]]
 id = "gemini-2.5-flash-preview-tts"
@@ -413,6 +421,8 @@ upstream_model = "gemini-2.5-flash-preview-tts"
 input_per_m = 10
 output_per_m = 20
 allow_free = false
+billing_mode = "per_call"
+unit_credits = 1
 
 [[models]]
 id = "free:gemini-2.5-flash-preview-tts"
@@ -421,6 +431,8 @@ upstream_model = "gemini-2.5-flash-preview-tts"
 input_per_m = 0
 output_per_m = 0
 allow_free = true
+billing_mode = "per_call"
+unit_credits = 0
 
 [[models]]
 id = "lyria-002"
@@ -429,6 +441,8 @@ upstream_model = "lyria-002"
 input_per_m = 40
 output_per_m = 40
 allow_free = false
+billing_mode = "per_call"
+unit_credits = 15
 
 [[models]]
 id = "veo-2.0-generate-001"
@@ -437,6 +451,8 @@ upstream_model = "veo-2.0-generate-001"
 input_per_m = 100
 output_per_m = 100
 allow_free = false
+billing_mode = "per_second"
+unit_credits = 20
 
 [[models]]
 id = "veo-3.0-generate-preview"
@@ -445,6 +461,8 @@ upstream_model = "veo-3.0-generate-preview"
 input_per_m = 150
 output_per_m = 150
 allow_free = false
+billing_mode = "per_second"
+unit_credits = 20
 
 [[models]]
 id = "veo-3.1-fast-generate-001"
@@ -453,6 +471,8 @@ upstream_model = "veo-3.1-fast-generate-001"
 input_per_m = 150
 output_per_m = 150
 allow_free = false
+billing_mode = "per_second"
+unit_credits = 20
 
 [[models]]
 id = "gemini-nano-banana-2.1"
@@ -461,6 +481,8 @@ upstream_model = "gemini-nano-banana-2.1"
 input_per_m = 40
 output_per_m = 40
 allow_free = false
+billing_mode = "per_call"
+unit_credits = 10
 
 # === 自建 MOSS / AnimeXL 免费 GPU 算力池 ===
 

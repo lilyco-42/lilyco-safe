@@ -92,7 +92,9 @@ pub async fn api_list_models(State(st): State<AppState>) -> impl IntoResponse {
                 "owned_by": m.channel_id,
                 "input_per_m": m.input_per_m,
                 "output_per_m": m.output_per_m,
-                "allow_free": m.allow_free
+                "allow_free": m.allow_free,
+                "billing_mode": m.billing_mode,
+                "unit_credits": m.unit_credits
             })
         })
         .collect();
@@ -638,7 +640,8 @@ pub async fn api_get_model(
     };
     Json(json!({
         "id": m.id, "object": "model", "owned_by": m.channel_id,
-        "input_per_m": m.input_per_m, "output_per_m": m.output_per_m, "allow_free": m.allow_free
+        "input_per_m": m.input_per_m, "output_per_m": m.output_per_m, "allow_free": m.allow_free,
+        "billing_mode": m.billing_mode, "unit_credits": m.unit_credits
     }))
     .into_response()
 }
@@ -662,17 +665,11 @@ async fn forward_paid_endpoint<T: serde::Serialize>(
         .ok_or_else(|| RelayError::ModelNotFound(format!("unknown model {model_id}")))?;
     let verified = st.ledger.verify_api_key(&raw_key, &model.id).await?;
     st.risk.check_key_ip_whitelist(ip, &verified.allowed_ips)?;
-    let hold_cost = if model.allow_free {
-        0
-    } else if model.id.starts_with("veo-") {
-        80
-    } else if model.id.starts_with("lyria-") {
-        15
-    } else if model.id.contains("nano-banana") || model.id.starts_with("imagen-") {
-        10
-    } else {
-        1
-    };
+    let policy = st.ledger.get_user_policy(&verified.record.username).await?;
+    if policy.banned {
+        return Err(RelayError::Forbidden("account is suspended".into()));
+    }
+    let hold_cost = policy.apply_discount(model.compute_fixed_cost(1));
     st.risk.check_key_spend(&verified.record.id, hold_cost)?;
     let hold = st.ledger.pre_hold_paid(&verified.record, hold_cost).await?;
     let pool = st.ledger.find_live_channels(&model.id).await.unwrap_or_default();
@@ -727,15 +724,16 @@ pub async fn api_images(
 /// Shared zero-trust paid-hold wrapper for native Gemini multimodal endpoints (Rule of 4).
 async fn run_paid_multimodal<F, Fut>(
     st: &AppState,
-    ip: &ClientIp,
-    headers: &HeaderMap,
-    model_id: &str,
+    client: (&ClientIp, &HeaderMap),
+    billing: (&str, u64),
     call: F,
 ) -> Result<serde_json::Value, RelayError>
 where
     F: FnOnce(relay_core::ModelConfig, Vec<relay_engine::LiveChannel>) -> Fut,
     Fut: Future<Output = Result<serde_json::Value, RelayError>>,
 {
+    let (ip, headers) = client;
+    let (model_id, units) = billing;
     st.risk.check_ip(ip)?;
     let raw_key = AppState::extract_bearer(headers).ok_or_else(|| {
         st.risk.record_auth_failure(ip);
@@ -747,17 +745,11 @@ where
         .ok_or_else(|| RelayError::ModelNotFound(format!("unknown model {model_id}")))?;
     let verified = st.ledger.verify_api_key(&raw_key, &model.id).await?;
     st.risk.check_key_ip_whitelist(ip, &verified.allowed_ips)?;
-    let hold_cost = if model.allow_free {
-        0
-    } else if model.id.starts_with("veo-") {
-        80
-    } else if model.id.starts_with("lyria-") {
-        15
-    } else if model.id.contains("nano-banana") || model.id.starts_with("imagen-") {
-        10
-    } else {
-        1
-    };
+    let policy = st.ledger.get_user_policy(&verified.record.username).await?;
+    if policy.banned {
+        return Err(RelayError::Forbidden("account is suspended".into()));
+    }
+    let hold_cost = policy.apply_discount(model.compute_fixed_cost(units));
     st.risk.check_key_spend(&verified.record.id, hold_cost)?;
     let hold = st.ledger.pre_hold_paid(&verified.record, hold_cost).await?;
     let pool = st.ledger.find_live_channels(&model.id).await.unwrap_or_default();
@@ -789,7 +781,7 @@ pub async fn api_audio_speech(
     };
     let router = st.router.clone();
     let model_id = req.model.clone();
-    match run_paid_multimodal(&st, &ip, &headers, &model_id, |m, pool| async move {
+    match run_paid_multimodal(&st, (&ip, &headers), (&model_id, 1), |m, pool| async move {
         router.call_speech_with_pool(&m, &req, &pool).await
     })
     .await
@@ -814,7 +806,7 @@ pub async fn api_music_generations(
     };
     let router = st.router.clone();
     let model_id = req.model.clone();
-    match run_paid_multimodal(&st, &ip, &headers, &model_id, |m, pool| async move {
+    match run_paid_multimodal(&st, (&ip, &headers), (&model_id, 1), |m, pool| async move {
         router.call_music_with_pool(&m, &req, &pool).await
     })
     .await
@@ -839,13 +831,191 @@ pub async fn api_video_generations(
     };
     let router = st.router.clone();
     let model_id = req.model.clone();
-    match run_paid_multimodal(&st, &ip, &headers, &model_id, |m, pool| async move {
+    let duration_units = req.duration_sec.unwrap_or(4).clamp(4, 8) as u64;
+    match run_paid_multimodal(&st, (&ip, &headers), (&model_id, duration_units), |m, pool| async move {
         router.call_video_with_pool(&m, &req, &pool).await
     })
     .await
     {
         Ok(v) => Json(v).into_response(),
         Err(e) => st.err_response(&headers, e),
+    }
+}
+
+/// OpenAI Responses API passthrough (`POST /v1/responses`) for Codex & modern OpenAI SDKs.
+pub async fn api_openai_responses(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let ip = match client_ip_from(&st, peer, &headers) {
+        Ok(v) => v,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    let Some(model_id) = body.get("model").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) else {
+        return st.err_response(&headers, RelayError::InvalidInput("missing model field".into()));
+    };
+    if let Err(e) = st.risk.check_ip(&ip) {
+        return st.err_response(&headers, e);
+    }
+    let Some(raw_key) = AppState::extract_bearer(&headers) else {
+        st.risk.record_auth_failure(&ip);
+        return st.err_response(&headers, RelayError::Unauthorized("missing bearer api key".into()));
+    };
+    let Some(model) = st.router.find_model(model_id) else {
+        return st.err_response(&headers, RelayError::ModelNotFound(format!("unknown model {model_id}")));
+    };
+    let verified = match st.ledger.verify_api_key(&raw_key, &model.id).await {
+        Ok(k) => k,
+        Err(e) => {
+            st.risk.record_auth_failure(&ip);
+            return st.err_response(&headers, e);
+        }
+    };
+    if let Err(e) = st.risk.check_key_ip_whitelist(&ip, &verified.allowed_ips) {
+        return st.err_response(&headers, e);
+    }
+    let policy = match st.ledger.get_user_policy(&verified.record.username).await {
+        Ok(p) => p,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    if policy.banned {
+        return st.err_response(&headers, RelayError::Forbidden("account is suspended".into()));
+    }
+    let rate = PricingRate {
+        input_per_m: model.input_per_m,
+        output_per_m: model.output_per_m,
+        allow_free: model.allow_free,
+    };
+    let est_tokens = (body.to_string().len() / 4).max(128) as u64;
+    let est_hold = policy.apply_discount(rate.calculate_credits(TokenUsage {
+        prompt_tokens: est_tokens,
+        completion_tokens: 512,
+    }));
+    if let Err(e) = st.risk.check_key_spend(&verified.record.id, est_hold) {
+        return st.err_response(&headers, e);
+    }
+    let hold = match st.ledger.pre_hold_paid(&verified.record, est_hold).await {
+        Ok(h) => h,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    let pool = st.ledger.find_live_channels(&model.id).await.unwrap_or_default();
+    match st.router.forward_json_endpoint_with_pool(&model, "responses", &body, &pool).await {
+        Ok(val) => {
+            let p = val.pointer("/usage/input_tokens").and_then(|x| x.as_u64()).unwrap_or(est_tokens);
+            let c = val.pointer("/usage/output_tokens").and_then(|x| x.as_u64()).unwrap_or(128);
+            let usage = TokenUsage { prompt_tokens: p, completion_tokens: c };
+            let actual = policy.apply_discount(rate.calculate_credits(usage));
+            let _ = st.ledger.settle_hold(&hold, &model.id, usage, actual).await;
+            Json(val).into_response()
+        }
+        Err(e) => {
+            let _ = st.ledger.refund_hold(&hold, &model.id).await;
+            st.err_response(&headers, e)
+        }
+    }
+}
+
+/// Extract Relay API key from `x-goog-api-key`, `Authorization: Bearer`, or `?key=...` query param.
+fn extract_google_or_bearer_key(headers: &HeaderMap, query_key: Option<&str>) -> Option<String> {
+    if let Some(k) = headers.get("x-goog-api-key").and_then(|v| v.to_str().ok()).map(str::trim)
+        && !k.is_empty()
+    {
+        return Some(k.to_string());
+    }
+    if let Some(k) = AppState::extract_bearer(headers) {
+        return Some(k);
+    }
+    query_key.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+#[derive(Deserialize, Default)]
+pub struct GeminiKeyQuery {
+    pub key: Option<String>,
+}
+
+/// Native Google Gemini REST passthrough (`POST /v1beta/models/{*model_action}`) for `gemini-api-cli`.
+pub async fn api_gemini_v1beta(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(model_action): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<GeminiKeyQuery>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let ip = match client_ip_from(&st, peer, &headers) {
+        Ok(v) => v,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    if let Err(e) = st.risk.check_ip(&ip) {
+        return st.err_response(&headers, e);
+    }
+    let Some((model_id, action)) = model_action.trim().trim_start_matches('/').split_once(':') else {
+        return st.err_response(&headers, RelayError::InvalidInput("expected {model}:{action}".into()));
+    };
+    let Some(raw_key) = extract_google_or_bearer_key(&headers, q.key.as_deref()) else {
+        st.risk.record_auth_failure(&ip);
+        return st.err_response(&headers, RelayError::Unauthorized("missing x-goog-api-key or bearer key".into()));
+    };
+    let Some(model) = st.router.find_model(model_id) else {
+        return st.err_response(&headers, RelayError::ModelNotFound(format!("unknown model {model_id}")));
+    };
+    let verified = match st.ledger.verify_api_key(&raw_key, &model.id).await {
+        Ok(k) => k,
+        Err(e) => {
+            st.risk.record_auth_failure(&ip);
+            return st.err_response(&headers, e);
+        }
+    };
+    if let Err(e) = st.risk.check_key_ip_whitelist(&ip, &verified.allowed_ips) {
+        return st.err_response(&headers, e);
+    }
+    let policy = match st.ledger.get_user_policy(&verified.record.username).await {
+        Ok(p) => p,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    if policy.banned {
+        return st.err_response(&headers, RelayError::Forbidden("account is suspended".into()));
+    }
+    let rate = PricingRate {
+        input_per_m: model.input_per_m,
+        output_per_m: model.output_per_m,
+        allow_free: model.allow_free,
+    };
+    let est_tokens = (body.to_string().len() / 4).max(128) as u64;
+    let raw_est = if model.billing_mode == relay_core::BillingMode::Token {
+        rate.calculate_credits(TokenUsage { prompt_tokens: est_tokens, completion_tokens: 512 })
+    } else {
+        model.compute_fixed_cost(1)
+    };
+    let est_hold = policy.apply_discount(raw_est);
+    if let Err(e) = st.risk.check_key_spend(&verified.record.id, est_hold) {
+        return st.err_response(&headers, e);
+    }
+    let hold = match st.ledger.pre_hold_paid(&verified.record, est_hold).await {
+        Ok(h) => h,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    let pool = st.ledger.find_live_channels(&model.id).await.unwrap_or_default();
+    match st.router.call_gemini_v1beta_with_pool(&model, action, &body, &pool).await {
+        Ok(val) => {
+            let p = val.pointer("/usageMetadata/promptTokenCount").and_then(|x| x.as_u64()).unwrap_or(est_tokens);
+            let c = val.pointer("/usageMetadata/candidatesTokenCount").and_then(|x| x.as_u64()).unwrap_or(128);
+            let usage = TokenUsage { prompt_tokens: p, completion_tokens: c };
+            let raw_actual = if model.billing_mode == relay_core::BillingMode::Token {
+                rate.calculate_credits(usage)
+            } else {
+                model.compute_fixed_cost(1)
+            };
+            let actual = policy.apply_discount(raw_actual);
+            let _ = st.ledger.settle_hold(&hold, &model.id, usage, actual).await;
+            Json(val).into_response()
+        }
+        Err(e) => {
+            let _ = st.ledger.refund_hold(&hold, &model.id).await;
+            st.err_response(&headers, e)
+        }
     }
 }
 

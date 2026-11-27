@@ -138,6 +138,17 @@ impl VertexAuth {
         }
     }
 
+    /// Parse Vertex AI OAuth2 credential JSON stored in a DB channel (`provider = "vertex_ai"`).
+    pub fn from_json_str(raw: &str) -> Result<Self, RelayError> {
+        let cred: VertexCred = serde_json::from_str(raw.trim())
+            .map_err(|_| RelayError::Config("invalid vertex_ai credential JSON".into()))?;
+        Ok(Self {
+            cred: Some(cred),
+            cache: RwLock::new(CachedToken::default()),
+            budget: VertexBudgetGuard::from_env(),
+        })
+    }
+
     pub fn is_configured(&self) -> bool {
         self.cred.is_some()
     }

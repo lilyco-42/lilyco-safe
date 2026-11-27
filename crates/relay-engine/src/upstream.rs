@@ -3,8 +3,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
 use relay_core::{
-    AudioSpeechReq, ChannelConfig, ChannelProbeResult, ChatReq, ImageGenReq, MediaProtocol,
-    ModelConfig, ModelsCatalog, MusicGenReq, RelayError, TokenUsage, VideoGenReq,
+    AudioSpeechReq, BillingMode, ChannelConfig, ChannelProbeResult, ChatReq, ImageGenReq,
+    MediaProtocol, ModelConfig, ModelsCatalog, MusicGenReq, RelayError, TokenUsage, VideoGenReq,
 };
 use reqwest::Client;
 use secrecy::ExposeSecret;
@@ -17,6 +17,12 @@ use crate::vertex_auth::VertexAuth;
 fn global_vertex_auth() -> &'static VertexAuth {
     static VERTEX: OnceLock<VertexAuth> = OnceLock::new();
     VERTEX.get_or_init(VertexAuth::load_from_env)
+}
+
+fn db_vertex_auth(pool: &[LiveChannel]) -> Option<VertexAuth> {
+    pool.iter()
+        .find(|c| c.provider == "vertex_ai")
+        .and_then(|c| VertexAuth::from_json_str(c.api_key.expose_secret()).ok())
 }
 
 /// Sanitized upstream completion reply (4 fields, Rule of 4).
@@ -197,6 +203,8 @@ impl UpstreamRouter {
                     input_per_m: if free_flag { 0 } else { 20 },
                     output_per_m: if free_flag { 0 } else { 80 },
                     allow_free: free_flag,
+                    billing_mode: BillingMode::Token,
+                    unit_credits: 0,
                 },
             );
             added += 1;
@@ -209,8 +217,52 @@ impl UpstreamRouter {
         let base = ch.base_url.trim_end_matches('/');
         let key = ch.api_key.expose_secret();
         let t0 = std::time::Instant::now();
+        if ch.provider == "vertex_ai" {
+            let auth = VertexAuth::from_json_str(key).ok();
+            let (ok, detail) = match auth.as_ref() {
+                Some(va) => match va.access_token(&self.client).await {
+                    Ok(_) => (
+                        true,
+                        format!("Vertex OAuth2 正常 (project: {})", va.project_id().unwrap_or("default")),
+                    ),
+                    Err(e) => (false, format!("OAuth2 换取失败: {e}")),
+                },
+                None => (false, "无效的 Vertex JSON 凭证".to_string()),
+            };
+            return ChannelProbeResult {
+                ok,
+                latency_ms: t0.elapsed().as_millis() as u64,
+                models_count: if ok { 4 } else { 0 },
+                balance_text: detail,
+            };
+        }
+        if ch.provider == "moss_gpu" {
+            let health_url = format!("{base}/health");
+            let (ok, detail) = match self.client.get(&health_url).send().await {
+                Ok(r) if r.status().is_success() => {
+                    let v = r.json::<serde_json::Value>().await.unwrap_or_default();
+                    let w = v.get("workers_online").and_then(|x| x.as_u64()).unwrap_or(0);
+                    (true, format!("MOSS GPU 算力池在线 (workers: {w})"))
+                }
+                _ => (false, "MOSS Broker 不可达".to_string()),
+            };
+            return ChannelProbeResult {
+                ok,
+                latency_ms: t0.elapsed().as_millis() as u64,
+                models_count: if ok { 3 } else { 0 },
+                balance_text: detail,
+            };
+        }
         let models_url = format!("{base}/models");
-        let (ok, models_count) = match self.client.get(&models_url).bearer_auth(key).send().await {
+        let req = if ch.provider == "anthropic_native" {
+            self.client
+                .get(&models_url)
+                .header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01")
+        } else {
+            self.client.get(&models_url).bearer_auth(key)
+        };
+        let (ok, models_count) = match req.send().await {
             Ok(r) if r.status().is_success() => {
                 let cnt = r
                     .json::<serde_json::Value>()
@@ -549,9 +601,14 @@ impl UpstreamRouter {
         if is_gemini_img
             && let Ok(img_req) = serde_json::from_value::<ImageGenReq>(payload.clone())
         {
-            let vauth = global_vertex_auth();
-            if vauth.is_configured() && model.upstream_model.contains("nano-banana") {
-                return gemini_adapter::vertex_generate_image(&self.client, vauth, &model.upstream_model, &img_req).await;
+            if model.upstream_model.contains("nano-banana") {
+                if let Some(db_va) = db_vertex_auth(pool) {
+                    return gemini_adapter::vertex_generate_image(&self.client, &db_va, &model.upstream_model, &img_req).await;
+                }
+                let vauth = global_vertex_auth();
+                if vauth.is_configured() {
+                    return gemini_adapter::vertex_generate_image(&self.client, vauth, &model.upstream_model, &img_req).await;
+                }
             }
             for ch in pool.iter().filter(|c| gemini_adapter::is_gemini_channel(c)) {
                 if self.is_cooled(&ch.id) {
@@ -636,6 +693,9 @@ impl UpstreamRouter {
         req: &MusicGenReq,
         pool: &[LiveChannel],
     ) -> Result<serde_json::Value, RelayError> {
+        if let Some(db_va) = db_vertex_auth(pool) {
+            return gemini_adapter::vertex_generate_music(&self.client, &db_va, &model.upstream_model, req).await;
+        }
         let vauth = global_vertex_auth();
         if vauth.is_configured() {
             return gemini_adapter::vertex_generate_music(&self.client, vauth, &model.upstream_model, req).await;
@@ -663,6 +723,9 @@ impl UpstreamRouter {
         req: &VideoGenReq,
         pool: &[LiveChannel],
     ) -> Result<serde_json::Value, RelayError> {
+        if let Some(db_va) = db_vertex_auth(pool) {
+            return gemini_adapter::vertex_start_video(&self.client, &db_va, &model.upstream_model, req).await;
+        }
         let vauth = global_vertex_auth();
         if vauth.is_configured() {
             return gemini_adapter::vertex_start_video(&self.client, vauth, &model.upstream_model, req).await;
@@ -689,9 +752,14 @@ impl UpstreamRouter {
         operation: &str,
         pool: &[LiveChannel],
     ) -> Result<serde_json::Value, RelayError> {
-        let vauth = global_vertex_auth();
-        if vauth.is_configured() && operation.contains("/locations/") {
-            return gemini_adapter::vertex_poll_video(&self.client, vauth, operation).await;
+        if operation.contains("/locations/") {
+            if let Some(db_va) = db_vertex_auth(pool) {
+                return gemini_adapter::vertex_poll_video(&self.client, &db_va, operation).await;
+            }
+            let vauth = global_vertex_auth();
+            if vauth.is_configured() {
+                return gemini_adapter::vertex_poll_video(&self.client, vauth, operation).await;
+            }
         }
         let mut last_err = None;
         for ch in pool.iter().filter(|c| gemini_adapter::is_gemini_channel(c)) {
@@ -704,6 +772,32 @@ impl UpstreamRouter {
             }
         }
         Err(last_err.unwrap_or_else(|| RelayError::UpstreamFailed("no live gemini channel for poll".into())))
+    }
+
+    /// Passthrough native Google Gemini REST calls (`/v1beta/models/{model}:{action}`) with pool rotation.
+    pub async fn call_gemini_v1beta_with_pool(
+        &self,
+        model: &ModelConfig,
+        action: &str,
+        payload: &serde_json::Value,
+        pool: &[LiveChannel],
+    ) -> Result<serde_json::Value, RelayError> {
+        let mut last_err = None;
+        for ch in pool.iter().filter(|c| gemini_adapter::is_gemini_channel(c)) {
+            if self.is_cooled(&ch.id) {
+                continue;
+            }
+            match gemini_adapter::passthrough_v1beta(&self.client, ch, &model.upstream_model, action, payload).await {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    if e.to_string().contains("429") || e.to_string().contains("50") {
+                        self.trip_cooldown(&ch.id, 45);
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| RelayError::UpstreamFailed("no live gemini channel available".into())))
     }
 
     /// Measure upstream channel connectivity latency in milliseconds.

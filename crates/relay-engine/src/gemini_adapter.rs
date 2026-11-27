@@ -108,6 +108,24 @@ async fn post_gemini_json(
         .await
 }
 
+/// Passthrough a native Gemini REST call (`/v1beta/models/{upstream_model}:{action}`).
+pub async fn passthrough_v1beta(
+    client: &Client,
+    ch: &LiveChannel,
+    upstream_model: &str,
+    action: &str,
+    payload: &Value,
+) -> Result<Value, RelayError> {
+    let model = clean_model_id(upstream_model);
+    let clean_action = action.trim().trim_start_matches(':');
+    if clean_action.is_empty() || clean_action.contains('/') || clean_action.contains("..") {
+        return Err(RelayError::InvalidInput("invalid gemini model action".into()));
+    }
+    let root = native_v1beta_root(&ch.base_url);
+    let url = format!("{root}/models/{model}:{clean_action}");
+    post_gemini_json(client, ch, &url, payload).await
+}
+
 /// Dispatch native Gemini image generation (Nano Banana or Imagen 3/4) and normalize to OpenAI format.
 pub async fn generate_image(
     client: &Client,

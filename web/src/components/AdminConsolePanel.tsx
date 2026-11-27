@@ -42,20 +42,30 @@ interface Props {
   onToast: (msg: string) => void;
 }
 
+const PROVIDER_TYPES = [
+  { value: "openai_compat", label: "OpenAI 兼容 (openai_compat)" },
+  { value: "gemini_openai", label: "Google AI Studio / Gemini (gemini_openai)" },
+  { value: "vertex_ai", label: "Google Cloud Vertex AI OAuth2 (vertex_ai)" },
+  { value: "anthropic_native", label: "Anthropic 原生 (anthropic_native)" },
+  { value: "openrouter", label: "OpenRouter (openrouter)" },
+  { value: "moss_gpu", label: "自建 MOSS / AnimeXL GPU (moss_gpu)" },
+];
+
 const PROVIDER_PRESETS = [
+  { key: "vertex_ai", label: "Google Cloud Vertex AI (Veo / Lyria / Nano Banana · OAuth2 JSON)", provider: "vertex_ai", baseUrl: "https://us-central1-aiplatform.googleapis.com/v1", models: "lyria-002,veo-3.1-fast-generate-001,veo-2.0-generate-001,gemini-nano-banana-2.1" },
+  { key: "aistudio", label: "Google AI Studio (Gemini / TTS / Imagen)", provider: "gemini_openai", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", models: "gemini-3.8-flash,gemini-2.5-flash,gemini-2.5-pro,gemini-2.5-flash-preview-tts,imagen-3.0-generate-002" },
+  { key: "aistudio_free", label: "Google AI Studio 免费池 (14.4K RPD)", provider: "gemini_openai", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", models: "free:gemma-4-31b,free:gemma-4-26b,free:gemini-3.5-flash-lite,free:gemini-3.1-flash-lite,free:gemini-2.5-flash-preview-tts" },
+  { key: "anthropic", label: "Anthropic 官方原生 (Claude)", provider: "anthropic_native", baseUrl: "https://api.anthropic.com/v1", models: "claude-sonnet-4,claude-sonnet-5.5" },
+  { key: "moss_gpu", label: "自建 MOSS / AnimeXL GPU 算力池", provider: "moss_gpu", baseUrl: "http://127.0.0.1:4720", models: "free:moss-image-sft,free:noobai-xl-1.1,free:animagine-xl-4.0" },
   { key: "cloudflare", label: "Cloudflare AI Gateway / Workers AI", provider: "openai_compat", baseUrl: "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/openai", models: "deepseek-v4.1-flash,gemini-2.5-flash" },
   { key: "aws", label: "AWS Bedrock (OpenAI 兼容)", provider: "openai_compat", baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1", models: "claude-sonnet-4,deepseek-v4-pro" },
-  { key: "gcp", label: "Google Cloud Vertex AI", provider: "gemini_openai", baseUrl: "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/{project}/locations/us-central1/endpoints/openapi", models: "gemini-2.5-flash,gemini-2.5-pro" },
-  { key: "aistudio", label: "Google AI Studio (Tier 1 $10 / Imagen 3)", provider: "gemini_openai", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", models: "gemini-3.8-flash,gemini-2.5-flash,gemini-2.5-pro,imagen-3.0-generate-002" },
-  { key: "aistudio_free", label: "Google AI Studio 免费池 (14.4K RPD)", provider: "gemini_openai", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", models: "free:gemma-4-31b,free:gemma-4-26b,free:gemini-3.5-flash-lite,free:gemini-3.1-flash-lite" },
   { key: "openrouter", label: "OpenRouter (支持查余额 + 免费池)", provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1", models: "claude-sonnet-5.5,gpt-6.2-astra,free:qwen3-8b" },
   { key: "groq", label: "Groq 免费高速推理", provider: "openai_compat", baseUrl: "https://api.groq.com/openai/v1", models: "free:groq-llama-3.3-70b" },
   { key: "cerebras", label: "Cerebras 免费极速推理", provider: "openai_compat", baseUrl: "https://api.cerebras.ai/v1", models: "free:cerebras-llama-3.3-70b" },
   { key: "nvidia_nim", label: "NVIDIA NIM 免费推理", provider: "openai_compat", baseUrl: "https://integrate.api.nvidia.com/v1", models: "free:nim-llama-3.3-70b,free:nim-deepseek-r1" },
   { key: "siliconflow", label: "SiliconFlow 硅基流动 (免费生图 FLUX + 查余额)", provider: "openai_compat", baseUrl: "https://api.siliconflow.cn/v1", models: "free:sf-qwen2.5-7b,free:flux-1-schnell" },
   { key: "github_models", label: "GitHub Models 免费推理", provider: "openai_compat", baseUrl: "https://models.inference.ai.azure.com", models: "free:github-gpt-4o-mini,free:github-deepseek-r1" },
-  { key: "openai", label: "OpenAI 官方", provider: "openai_compat", baseUrl: "https://api.openai.com/v1", models: "gpt-4o,gpt-4.1-mini" },
-  { key: "anthropic", label: "Anthropic 官方", provider: "openai_compat", baseUrl: "https://api.anthropic.com/v1", models: "claude-sonnet-4" },
+  { key: "openai", label: "OpenAI 官方 (Chat + Responses)", provider: "openai_compat", baseUrl: "https://api.openai.com/v1", models: "gpt-4o,gpt-4.1-mini" },
   { key: "deepseek", label: "DeepSeek 官方 (支持查余额)", provider: "openai_compat", baseUrl: "https://api.deepseek.com/v1", models: "deepseek-v3,deepseek-v4.1-flash" },
   { key: "xai", label: "xAI (Grok)", provider: "openai_compat", baseUrl: "https://api.x.ai/v1", models: "grok-3" },
   { key: "custom", label: "自定义 OpenAI 兼容中转站", provider: "openai_compat", baseUrl: "https://your-upstream.example.com/v1", models: "*" },
@@ -75,14 +85,16 @@ export function AdminConsolePanel({
   const [users, setUsers] = useState<AdminUserSummary[]>([]);
   const [busy, setBusy] = useState(false);
 
-  // Channel form with 14+ provider presets
-  const [presetKey, setPresetKey] = useState("cloudflare");
-  const [chId, setChId] = useState("cloudflare-pool-1");
-  const [chName, setChName] = useState("Cloudflare AI Gateway");
-  const [chProvider, setChProvider] = useState("openai_compat");
+  // Channel form with unified provider protocol selector (OpenAI / Gemini / Vertex / Anthropic / MOSS)
+  const [presetKey, setPresetKey] = useState("vertex_ai");
+  const [chId, setChId] = useState("vertex-ai-pool-1");
+  const [chName, setChName] = useState(PROVIDER_PRESETS[0].label);
+  const [chProvider, setChProvider] = useState(PROVIDER_PRESETS[0].provider);
   const [chBaseUrl, setChBaseUrl] = useState(PROVIDER_PRESETS[0].baseUrl);
   const [chKey, setChKey] = useState("");
   const [chModels, setChModels] = useState(PROVIDER_PRESETS[0].models);
+  const [chPriority, setChPriority] = useState("90");
+  const [chEnabled, setChEnabled] = useState(true);
 
   // Resell API Key Batch Minting
   const [resellCount, setResellCount] = useState("5");
@@ -133,28 +145,46 @@ export function AdminConsolePanel({
   }, [section, isAdminRole, adminKey]);
 
   const handleSaveChannel = async () => {
-    if (!chKey.trim()) return onToast("请填写上游 API Key");
+    if (!chKey.trim() && chProvider !== "moss_gpu") {
+      return onToast(chProvider === "vertex_ai" ? "请粘贴 Vertex AI OAuth2 / Service Account JSON" : "请填写上游 API Key");
+    }
     setBusy(true);
     try {
       await adminUpsertChannel(jwt, adminKey, {
         id: chId.trim(),
         provider: chProvider,
-        endpoint: { name: chName.trim() || chId.trim(), base_url: chBaseUrl.trim(), api_key: chKey.trim() },
+        endpoint: {
+          name: chName.trim() || chId.trim(),
+          base_url: chBaseUrl.trim(),
+          api_key: chKey.trim() || "moss-internal",
+        },
         routing: {
           models: chModels.split(",").map((s) => s.trim()).filter(Boolean),
-          priority: 90,
+          priority: Math.max(1, Math.min(1000, Number(chPriority) || 90)),
           weight: 100,
-          enabled: true,
+          enabled: chEnabled,
         },
       });
       setChKey("");
-      onToast(`渠道 ${chId} 已热接入 Key 池！`);
+      onToast(`渠道 ${chId} (${chProvider}) 已热更新至统一 Key 池！`);
       loadAll();
     } catch (e) {
       onToast(`保存渠道失败：${(e as Error).message}`);
     } finally {
       setBusy(false);
     }
+  };
+
+  const handleEditChannel = (c: ChannelItem) => {
+    setChId(c.id);
+    setChName(c.meta.name || c.id);
+    setChProvider(c.provider);
+    setChBaseUrl(c.base_url);
+    setChModels(c.meta.models.join(","));
+    setChPriority(String(c.meta.priority ?? 90));
+    setChEnabled(c.meta.enabled);
+    setChKey("");
+    onToast(`已载入渠道 ${c.id} 到上方表单，填入新凭证后点击保存即可更新`);
   };
 
   const handleProbe = async (id: string) => {
@@ -252,7 +282,7 @@ export function AdminConsolePanel({
           <div className="card">
             <div className="card-header">
               <h3 className="card-title">
-                <Server size={17} color="var(--primary)" /> 接入第三方供应商（支持 Cloudflare / AWS / Google Cloud / 14+ 预设）
+                <Server size={17} color="var(--primary)" /> 统一多协议上游接入（OpenAI / Gemini / Vertex AI / Anthropic / MOSS GPU）
               </h3>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 10 }}>
@@ -263,14 +293,44 @@ export function AdminConsolePanel({
                   </option>
                 ))}
               </select>
+              <select className="select" value={chProvider} onChange={(e) => setChProvider(e.target.value)}>
+                {PROVIDER_TYPES.map((t) => (
+                  <option key={t.value} value={t.value}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
               <input className="input" placeholder="渠道 ID" value={chId} onChange={(e) => setChId(e.target.value)} />
               <input className="input" placeholder="展示名称" value={chName} onChange={(e) => setChName(e.target.value)} />
               <input className="input mono" placeholder="Base URL (自动填充，可自定义)" value={chBaseUrl} onChange={(e) => setChBaseUrl(e.target.value)} />
-              <input className="input mono" type="password" placeholder="上游 API Key" value={chKey} onChange={(e) => setChKey(e.target.value)} />
               <input className="input" placeholder="路由模型 (逗号分隔或 *)" value={chModels} onChange={(e) => setChModels(e.target.value)} />
+              <input className="input" placeholder="优先级 (默认 90)" value={chPriority} onChange={(e) => setChPriority(e.target.value)} />
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "0 6px" }}>
+                <input type="checkbox" checked={chEnabled} onChange={(e) => setChEnabled(e.target.checked)} />
+                启用该渠道
+              </label>
+            </div>
+            <div style={{ marginTop: 10 }}>
+              {chProvider === "vertex_ai" ? (
+                <textarea
+                  className="input mono"
+                  rows={4}
+                  placeholder='粘贴 Vertex AI Service Account 或 Authorized User OAuth2 JSON（含 "type": "service_account" 或 "authorized_user"）'
+                  value={chKey}
+                  onChange={(e) => setChKey(e.target.value)}
+                />
+              ) : (
+                <input
+                  className="input mono"
+                  type="password"
+                  placeholder={chProvider === "moss_gpu" ? "MOSS Broker 可留空（内网直连）" : "上游 API Key"}
+                  value={chKey}
+                  onChange={(e) => setChKey(e.target.value)}
+                />
+              )}
             </div>
             <button className="btn btn-primary" style={{ marginTop: 12 }} disabled={!hasAuth || busy} onClick={handleSaveChannel}>
-              <Plus size={15} /> 热接入上游池
+              <Plus size={15} /> 保存 / 热接入统一渠道池
             </button>
           </div>
 
@@ -311,7 +371,11 @@ export function AdminConsolePanel({
                     return (
                       <tr key={c.id}>
                         <td>
-                          <div className="mono" style={{ fontWeight: 700 }}>{c.id}</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                            <span className="mono" style={{ fontWeight: 700 }}>{c.id}</span>
+                            <span className="pill pill-guest" style={{ fontSize: 11 }}>{c.provider}</span>
+                            {!c.meta.enabled && <span className="pill pill-danger" style={{ fontSize: 11 }}>已停用</span>}
+                          </div>
                           <div style={{ fontSize: 11.5, color: "var(--text-muted)" }}>{c.meta.models.join(", ")}</div>
                         </td>
                         <td className="mono" style={{ fontSize: 12 }}>{c.base_url}</td>
@@ -328,6 +392,14 @@ export function AdminConsolePanel({
                           )}
                         </td>
                         <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                          <button
+                            className="btn btn-sm"
+                            style={{ marginRight: 6 }}
+                            disabled={busy}
+                            onClick={() => handleEditChannel(c)}
+                          >
+                            编辑
+                          </button>
                           <button
                             className="btn btn-sm"
                             style={{ marginRight: 6 }}

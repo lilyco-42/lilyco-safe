@@ -90,6 +90,15 @@ fn default_enabled() -> bool {
     true
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BillingMode {
+    #[default]
+    Token,
+    PerCall,
+    PerSecond,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelConfig {
@@ -100,6 +109,24 @@ pub struct ModelConfig {
     pub output_per_m: u64,
     #[serde(default)]
     pub allow_free: bool,
+    #[serde(default)]
+    pub billing_mode: BillingMode,
+    #[serde(default)]
+    pub unit_credits: u64,
+}
+
+impl ModelConfig {
+    /// Compute fixed/unit credits for non-token endpoints (`per_call` / `per_second`).
+    pub fn compute_fixed_cost(&self, units: u64) -> u64 {
+        if self.allow_free {
+            return 0;
+        }
+        match self.billing_mode {
+            BillingMode::PerCall => self.unit_credits.max(1),
+            BillingMode::PerSecond => self.unit_credits.saturating_mul(units.max(1)).max(1),
+            BillingMode::Token => self.unit_credits.max(1),
+        }
+    }
 }
 
 impl ModelsCatalog {
@@ -155,5 +182,47 @@ impl I18nBundle {
             return m.clone();
         }
         key.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_model(mode: BillingMode, unit_credits: u64, allow_free: bool) -> ModelConfig {
+        ModelConfig {
+            id: "test-model".into(),
+            channel_id: "ch".into(),
+            upstream_model: "test".into(),
+            input_per_m: 10,
+            output_per_m: 20,
+            allow_free,
+            billing_mode: mode,
+            unit_credits,
+        }
+    }
+
+    #[test]
+    fn fixed_cost_respects_billing_modes() {
+        assert_eq!(sample_model(BillingMode::PerSecond, 20, false).compute_fixed_cost(4), 80);
+        assert_eq!(sample_model(BillingMode::PerSecond, 20, false).compute_fixed_cost(8), 160);
+        assert_eq!(sample_model(BillingMode::PerCall, 15, false).compute_fixed_cost(1), 15);
+        assert_eq!(sample_model(BillingMode::PerCall, 15, true).compute_fixed_cost(1), 0);
+        assert_eq!(sample_model(BillingMode::Token, 0, false).compute_fixed_cost(1), 1);
+    }
+
+    #[test]
+    fn models_toml_catalog_loads_billing_modes() {
+        let catalog = ModelsCatalog::load(Path::new("../../config/models.toml"))
+            .expect("models.toml should parse");
+        let veo = catalog
+            .find_model("veo-3.1-fast-generate-001")
+            .expect("veo model exists");
+        assert_eq!(veo.billing_mode, BillingMode::PerSecond);
+        assert_eq!(veo.compute_fixed_cost(4), 80);
+        assert_eq!(veo.compute_fixed_cost(8), 160);
+        let lyria = catalog.find_model("lyria-002").expect("lyria model exists");
+        assert_eq!(lyria.billing_mode, BillingMode::PerCall);
+        assert_eq!(lyria.compute_fixed_cost(1), 15);
     }
 }

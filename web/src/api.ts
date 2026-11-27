@@ -11,6 +11,8 @@ export interface UserRolePolicy {
   banned: boolean;
 }
 
+export type BillingMode = "token" | "per_call" | "per_second";
+
 export interface ModelItem {
   id: string;
   object: string;
@@ -18,6 +20,8 @@ export interface ModelItem {
   input_per_m: number;
   output_per_m: number;
   allow_free: boolean;
+  billing_mode?: BillingMode;
+  unit_credits?: number;
 }
 
 export interface RiskStats {
