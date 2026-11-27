@@ -951,7 +951,7 @@ pub async fn api_gemini_v1beta(
     if let Err(e) = st.risk.check_ip(&ip) {
         return st.err_response(&headers, e);
     }
-    let Some((model_id, action)) = model_action.trim().trim_start_matches('/').split_once(':') else {
+    let Some((model_id, action)) = model_action.trim().trim_start_matches('/').rsplit_once(':') else {
         return st.err_response(&headers, RelayError::InvalidInput("expected {model}:{action}".into()));
     };
     let Some(raw_key) = extract_google_or_bearer_key(&headers, q.key.as_deref()) else {
