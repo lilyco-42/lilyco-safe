@@ -1,17 +1,22 @@
+@import "tailwindcss";
+
+/* shadcn/ui Zinc Design Tokens (Vercel / Linear / satnaing/shadcn-admin aesthetic) */
 :root {
-  --bg-app: #f5f7fb;
-  --bg-sidebar: #ffffff;
+  --bg-app: #fafafa;
+  --bg-sidebar: #fafafa;
   --bg-card: #ffffff;
-  --bg-subtle: #f8fafc;
-  --bg-hover: #f1f5f9;
-  --border: #e5e7eb;
-  --border-strong: #d1d5db;
-  --text: #0f172a;
-  --text-secondary: #475569;
-  --text-muted: #64748b;
-  --primary: #4f46e5;
-  --primary-hover: #4338ca;
-  --primary-soft: rgba(79, 70, 229, 0.1);
+  --bg-subtle: #f4f4f5;
+  --bg-hover: #f4f4f5;
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --text: #09090b;
+  --text-secondary: #52525b;
+  --text-muted: #71717a;
+  --primary: #18181b;
+  --primary-foreground: #fafafa;
+  --primary-hover: #27272a;
+  --primary-soft: rgba(24, 24, 27, 0.06);
+  --ring: #18181b;
   --success: #059669;
   --success-soft: rgba(5, 150, 105, 0.1);
   --warning: #d97706;
@@ -19,33 +24,35 @@
   --danger: #dc2626;
   --danger-soft: rgba(220, 38, 38, 0.1);
   --vip-bg: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
-  --shadow-md: 0 4px 16px rgba(15, 23, 42, 0.06);
-  --radius: 10px;
+  --shadow-sm: 0 1px 2px rgba(9, 9, 11, 0.04);
+  --shadow-md: 0 4px 14px rgba(9, 9, 11, 0.06);
+  --radius: 8px;
 }
 
 [data-theme="dark"] {
-  --bg-app: #0b1120;
-  --bg-sidebar: #0f172a;
-  --bg-card: #111827;
-  --bg-subtle: #1e293b;
-  --bg-hover: #1e293b;
-  --border: #1f2937;
-  --border-strong: #334155;
-  --text: #f8fafc;
-  --text-secondary: #cbd5e1;
-  --text-muted: #94a3b8;
-  --primary: #6366f1;
-  --primary-hover: #818cf8;
-  --primary-soft: rgba(99, 102, 241, 0.16);
+  --bg-app: #09090b;
+  --bg-sidebar: #09090b;
+  --bg-card: #111113;
+  --bg-subtle: #18181b;
+  --bg-hover: #1f1f23;
+  --border: #27272a;
+  --border-strong: #3f3f46;
+  --text: #fafafa;
+  --text-secondary: #d4d4d8;
+  --text-muted: #a1a1aa;
+  --primary: #fafafa;
+  --primary-foreground: #09090b;
+  --primary-hover: #e4e4e7;
+  --primary-soft: rgba(250, 250, 250, 0.09);
+  --ring: #d4d4d8;
   --success: #34d399;
   --success-soft: rgba(52, 211, 153, 0.14);
   --warning: #fbbf24;
   --warning-soft: rgba(251, 191, 36, 0.15);
   --danger: #f87171;
   --danger-soft: rgba(248, 113, 113, 0.15);
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.45);
 }
 
 * {
@@ -111,16 +118,17 @@ html, body, #root {
 }
 
 .brand-icon {
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
-  background: linear-gradient(135deg, #4f46e5 0%, #06b6d4 100%);
-  color: #fff;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--primary);
+  color: var(--primary-foreground);
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 800;
-  box-shadow: 0 2px 8px rgba(79, 70, 229, 0.35);
+  font-size: 14px;
+  box-shadow: var(--shadow-sm);
 }
 
 .brand-text {
@@ -193,7 +201,7 @@ html, body, #root {
 }
 .nav-item.active .nav-badge {
   background: var(--primary);
-  color: #fff;
+  color: var(--primary-foreground);
   border-color: transparent;
 }
 
@@ -341,7 +349,7 @@ html, body, #root {
 .pill-guest { background: var(--bg-subtle); color: var(--text-muted); border: 1px solid var(--border); }
 .pill-user { background: var(--primary-soft); color: var(--primary); }
 .pill-vip { background: var(--vip-bg); color: #fff; box-shadow: 0 2px 6px rgba(217, 119, 6, 0.3); }
-.pill-admin { background: linear-gradient(135deg, #4f46e5, #7c3aed); color: #fff; }
+.pill-admin { background: var(--primary); color: var(--primary-foreground); }
 .pill-ok { background: var(--success-soft); color: var(--success); }
 .pill-warn { background: var(--warning-soft); color: var(--warning); }
 .pill-danger { background: var(--danger-soft); color: var(--danger); }
@@ -352,24 +360,25 @@ html, body, #root {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 8px 14px;
-  border-radius: 8px;
+  padding: 7px 13px;
+  border-radius: 7px;
   border: 1px solid var(--border);
   background: var(--bg-card);
   color: var(--text);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
   cursor: pointer;
   transition: all 0.15s ease;
   text-decoration: none;
   white-space: nowrap;
   flex-shrink: 0;
+  box-shadow: var(--shadow-sm);
 }
 .btn:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
 .btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .btn-primary {
   background: var(--primary);
-  color: #fff;
+  color: var(--primary-foreground);
   border-color: var(--primary);
 }
 .btn-primary:hover:not(:disabled) { background: var(--primary-hover); border-color: var(--primary-hover); }
@@ -733,7 +742,7 @@ table.data-table tr:hover td {
 .filter-pill.active {
   background: var(--primary);
   border-color: var(--primary);
-  color: #fff;
+  color: var(--primary-foreground);
 }
 
 /* Right slide-over Drawer (Semi Design / new-api style) */
