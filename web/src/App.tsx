@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useState } from "react";
 import {
   Bot,
   Coins,
@@ -38,13 +38,25 @@ import { DashboardPanel } from "./components/DashboardPanel";
 import { ModelsPanel } from "./components/ModelsPanel";
 import { TokensPanel } from "./components/TokensPanel";
 import { ChatPanel } from "./components/ChatPanel";
-import { ImageStudioPanel } from "./components/ImageStudioPanel";
-import { MultimodalStudioPanel } from "./components/MultimodalStudioPanel";
-import { BrowserAgentPanel } from "./components/BrowserAgentPanel";
-import { WorkflowHubPanel } from "./components/WorkflowHubPanel";
 import { WalletLogsPanel } from "./components/WalletLogsPanel";
-import { AdminConsolePanel } from "./components/AdminConsolePanel";
 import { CommandPalette } from "./components/CommandPalette";
+
+// Code-split heavy vertical labs & admin console so initial console load stays fast
+const ImageStudioPanel = lazy(() =>
+  import("./components/ImageStudioPanel").then((m) => ({ default: m.ImageStudioPanel })),
+);
+const MultimodalStudioPanel = lazy(() =>
+  import("./components/MultimodalStudioPanel").then((m) => ({ default: m.MultimodalStudioPanel })),
+);
+const BrowserAgentPanel = lazy(() =>
+  import("./components/BrowserAgentPanel").then((m) => ({ default: m.BrowserAgentPanel })),
+);
+const WorkflowHubPanel = lazy(() =>
+  import("./components/WorkflowHubPanel").then((m) => ({ default: m.WorkflowHubPanel })),
+);
+const AdminConsolePanel = lazy(() =>
+  import("./components/AdminConsolePanel").then((m) => ({ default: m.AdminConsolePanel })),
+);
 
 type NavId =
   | "dashboard"
@@ -361,6 +373,13 @@ export function App() {
         </header>
 
         <main className="content-wrap">
+          <Suspense
+            fallback={
+              <div className="card" style={{ textAlign: "center", padding: 48, color: "var(--text-muted)" }}>
+                正在按需加载模块...
+              </div>
+            }
+          >
           {nav === "dashboard" && (
             <DashboardPanel
               me={me}
@@ -460,6 +479,7 @@ export function App() {
               onToast={showToast}
             />
           )}
+          </Suspense>
           <footer className="site-beian-footer" aria-label="网站备案信息">
             <span>© 2026 宿松县云枢智创数码信息科技服务工作室</span>
             <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">

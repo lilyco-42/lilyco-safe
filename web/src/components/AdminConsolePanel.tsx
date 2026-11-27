@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   Ban,
-  Copy,
   Crown,
   Gift,
   KeyRound,
@@ -23,7 +22,6 @@ import {
   adminIpAction,
   adminListChannels,
   adminListUsers,
-  adminMintResellKeys,
   adminProbeChannel,
   adminResetModelPricing,
   adminSyncModels,
@@ -40,6 +38,8 @@ import {
   type ModelItem,
   type UserRole,
 } from "../api";
+import { PROVIDER_PRESETS, PROVIDER_TYPES } from "./admin/presets";
+import { ResellTab } from "./admin/ResellTab";
 
 interface Props {
   section: "channels" | "users" | "risk";
@@ -50,35 +50,6 @@ interface Props {
   health: HealthResp | null;
   onToast: (msg: string) => void;
 }
-
-const PROVIDER_TYPES = [
-  { value: "openai_compat", label: "OpenAI 兼容 (openai_compat)" },
-  { value: "gemini_openai", label: "Google AI Studio / Gemini (gemini_openai)" },
-  { value: "vertex_ai", label: "Google Cloud Vertex AI OAuth2 (vertex_ai)" },
-  { value: "anthropic_native", label: "Anthropic 原生 (anthropic_native)" },
-  { value: "openrouter", label: "OpenRouter (openrouter)" },
-  { value: "moss_gpu", label: "自建 MOSS / AnimeXL GPU (moss_gpu)" },
-];
-
-const PROVIDER_PRESETS = [
-  { key: "vertex_ai", label: "Google Cloud Vertex AI (Veo / Lyria / Nano Banana · OAuth2 JSON)", provider: "vertex_ai", baseUrl: "https://us-central1-aiplatform.googleapis.com/v1", models: "lyria-002,veo-3.1-fast-generate-001,veo-2.0-generate-001,gemini-nano-banana-2.1" },
-  { key: "aistudio", label: "Google AI Studio (Gemini / TTS / Imagen)", provider: "gemini_openai", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", models: "gemini-3.8-flash,gemini-2.5-flash,gemini-2.5-pro,gemini-2.5-flash-preview-tts,imagen-3.0-generate-002" },
-  { key: "aistudio_free", label: "Google AI Studio 免费池 (14.4K RPD)", provider: "gemini_openai", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", models: "free:gemma-4-31b,free:gemma-4-26b,free:gemini-3.5-flash-lite,free:gemini-3.1-flash-lite,free:gemini-2.5-flash-preview-tts" },
-  { key: "anthropic", label: "Anthropic 官方原生 (Claude)", provider: "anthropic_native", baseUrl: "https://api.anthropic.com/v1", models: "claude-sonnet-4,claude-sonnet-5.5" },
-  { key: "moss_gpu", label: "自建 MOSS / AnimeXL GPU 算力池", provider: "moss_gpu", baseUrl: "http://127.0.0.1:4720", models: "free:moss-image-sft,free:noobai-xl-1.1,free:animagine-xl-4.0" },
-  { key: "cloudflare", label: "Cloudflare AI Gateway / Workers AI", provider: "openai_compat", baseUrl: "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/openai", models: "deepseek-v4.1-flash,gemini-2.5-flash" },
-  { key: "aws", label: "AWS Bedrock (OpenAI 兼容)", provider: "openai_compat", baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1", models: "claude-sonnet-4,deepseek-v4-pro" },
-  { key: "openrouter", label: "OpenRouter (支持查余额 + 免费池)", provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1", models: "claude-sonnet-5.5,gpt-6.2-astra,free:qwen3-8b" },
-  { key: "groq", label: "Groq 免费高速推理", provider: "openai_compat", baseUrl: "https://api.groq.com/openai/v1", models: "free:groq-llama-3.3-70b" },
-  { key: "cerebras", label: "Cerebras 免费极速推理", provider: "openai_compat", baseUrl: "https://api.cerebras.ai/v1", models: "free:cerebras-llama-3.3-70b" },
-  { key: "nvidia_nim", label: "NVIDIA NIM 免费推理", provider: "openai_compat", baseUrl: "https://integrate.api.nvidia.com/v1", models: "free:nim-llama-3.3-70b,free:nim-deepseek-r1" },
-  { key: "siliconflow", label: "SiliconFlow 硅基流动 (免费生图 FLUX + 查余额)", provider: "openai_compat", baseUrl: "https://api.siliconflow.cn/v1", models: "free:sf-qwen2.5-7b,free:flux-1-schnell" },
-  { key: "github_models", label: "GitHub Models 免费推理", provider: "openai_compat", baseUrl: "https://models.inference.ai.azure.com", models: "free:github-gpt-4o-mini,free:github-deepseek-r1" },
-  { key: "openai", label: "OpenAI 官方 (Chat + Responses)", provider: "openai_compat", baseUrl: "https://api.openai.com/v1", models: "gpt-4o,gpt-4.1-mini" },
-  { key: "deepseek", label: "DeepSeek 官方 (支持查余额)", provider: "openai_compat", baseUrl: "https://api.deepseek.com/v1", models: "deepseek-v3,deepseek-v4.1-flash" },
-  { key: "xai", label: "xAI (Grok)", provider: "openai_compat", baseUrl: "https://api.x.ai/v1", models: "grok-3" },
-  { key: "custom", label: "自定义 OpenAI 兼容中转站", provider: "openai_compat", baseUrl: "https://your-upstream.example.com/v1", models: "*" },
-];
 
 export function AdminConsolePanel({
   section,
@@ -127,13 +98,6 @@ export function AdminConsolePanel({
   const [priceAllowFree, setPriceAllowFree] = useState(false);
   const [priceWarnings, setPriceWarnings] = useState<string[]>([]);
 
-  // Resell API Key Batch Minting
-  const [resellCount, setResellCount] = useState("5");
-  const [resellQuota, setResellQuota] = useState("1000");
-  const [resellBatch, setResellBatch] = useState("RESELL-100CNY");
-  const [resellDays, setResellDays] = useState("30");
-  const [resellKeys, setResellKeys] = useState<string[]>([]);
-
   // Risk & Redemptions
   const [targetIp, setTargetIp] = useState("");
   const [redCount, setRedCount] = useState("3");
@@ -142,7 +106,6 @@ export function AdminConsolePanel({
   const [mintedCodes, setMintedCodes] = useState<string[]>([]);
 
   const hasAuth = isAdminRole || adminKey.trim().length > 0;
-  const origin = typeof window !== "undefined" ? window.location.origin : "https://dev.lain42.top";
 
   const applyPreset = (key: string) => {
     setPresetKey(key);
@@ -344,24 +307,6 @@ export function AdminConsolePanel({
       onToast(res.ok ? `渠道 ${id} 在线 (${res.latency_ms}ms) · ${res.balance_text}` : `渠道 ${id} 测活失败 (${res.latency_ms}ms)`);
     } catch (e) {
       onToast(`测活失败：${(e as Error).message}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleMintResell = async () => {
-    setBusy(true);
-    try {
-      const res = await adminMintResellKeys(jwt, adminKey, {
-        count: Math.max(1, Number(resellCount) || 1),
-        quota_credits: Math.max(1, Number(resellQuota) || 100),
-        batch_name: resellBatch.trim() || "RESELL",
-        expires_days: Math.max(0, Number(resellDays) || 0),
-      });
-      setResellKeys(res.keys);
-      onToast(`已批量生成 ${res.count} 张预充值转售 API Key（每张 ${res.quota_credits} 积分）！`);
-    } catch (e) {
-      onToast(`生成失败：${(e as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -740,45 +685,7 @@ export function AdminConsolePanel({
 
           {/* Sub-tab C: Batch Resell API Key Minting */}
           {adminTab === "resell" && (
-            <div className="card">
-              <div className="card-header">
-                <h3 className="card-title">
-                  <KeyRound size={17} color="var(--warning)" /> 转售 API Key 批发发卡（买家免注册，即插即用）
-                </h3>
-              </div>
-              <p style={{ marginTop: 0, fontSize: 12.5, color: "var(--text-secondary)" }}>
-                批量签发带独立预充值额度的 <span className="mono">sk-l42-...</span> 转售密钥，可直接上架发卡网 / 闲鱼 / 爱发电；买家拿到即可填入 Cursor / Claude Code / cc-switch 直接调用。
-              </p>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
-                <input className="input" placeholder="生成数量 (1~100)" value={resellCount} onChange={(e) => setResellCount(e.target.value)} />
-                <input className="input" placeholder="单 Key 额度 (积分)" value={resellQuota} onChange={(e) => setResellQuota(e.target.value)} />
-                <input className="input" placeholder="批次名称" value={resellBatch} onChange={(e) => setResellBatch(e.target.value)} />
-                <input className="input" placeholder="有效天数 (0=永久)" value={resellDays} onChange={(e) => setResellDays(e.target.value)} />
-                <button className="btn btn-primary" disabled={!hasAuth || busy} onClick={handleMintResell}>
-                  批量签发转售 Key
-                </button>
-              </div>
-              {resellKeys.length > 0 && (
-                <div style={{ marginTop: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                    <span style={{ fontSize: 12.5, fontWeight: 700, color: "var(--success)" }}>
-                      已生成 {resellKeys.length} 张可转售密钥（Base URL: {origin}/relay/v1）
-                    </span>
-                    <button
-                      className="btn btn-sm btn-primary"
-                      onClick={() => {
-                        const csv = resellKeys.map((k) => `${k} | BaseURL: ${origin}/relay/v1 | 额度: ${resellQuota}积分`).join("\n");
-                        navigator.clipboard?.writeText(csv);
-                        onToast("已复制发卡网格式密钥清单！");
-                      }}
-                    >
-                      <Copy size={13} /> 一键复制发卡格式
-                    </button>
-                  </div>
-                  <div className="code-box">{resellKeys.join("\n")}</div>
-                </div>
-              )}
-            </div>
+            <ResellTab jwt={jwt} adminKey={adminKey} hasAuth={hasAuth} onToast={onToast} />
           )}
 
           {/* Slide-over Drawer: Create / Edit Channel */}
