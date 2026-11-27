@@ -4,9 +4,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use relay_core::{
-    AdminRoleUpdateReq, AdminUserSummary, ChannelUpsertReq, KeyIssueReq, KeyScope,
-    RedemptionCreateReq, RelayError, ResellKeyBatchReq, TokenUsage, TrialCardItem, UsageLogItem,
-    UserRole, UserRolePolicy,
+    AdminRoleUpdateReq, AdminUserSummary, AsyncTaskMeta, AsyncTaskRecord, AsyncTaskResult,
+    BillingMode, ChannelPolicy, ChannelUpsertReq, KeyIssueReq, KeyScope, ModelPricingOverride,
+    ModelRateSpec, RedemptionCreateReq, RelayError, ResellKeyBatchReq, TokenUsage, TrialCardItem,
+    UsageLogItem, UserRole, UserRolePolicy,
 };
 use ring::digest::{digest, SHA256};
 use secrecy::SecretString;
@@ -41,13 +42,14 @@ pub struct VerifiedKey {
     pub expired_unix: i64,
 }
 
-/// Dynamic DB-backed channel view (4 composed fields, Rule of 4).
+/// Dynamic DB-backed channel view.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChannelRecord {
     pub id: String,
     pub provider: String,
     pub base_url: String,
     pub meta: ChannelMeta,
+    pub policy: ChannelPolicy,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -58,13 +60,14 @@ pub struct ChannelMeta {
     pub enabled: bool,
 }
 
-/// Live upstream channel credentials for routing pool (4 fields, Rule of 4, zeroized SecretString).
+/// Live upstream channel credentials for routing pool (zeroized SecretString).
 #[derive(Debug, Clone)]
 pub struct LiveChannel {
     pub id: String,
     pub provider: String,
     pub base_url: String,
     pub api_key: SecretString,
+    pub policy: ChannelPolicy,
 }
 
 /// Dashboard aggregate stats (4 fields, Rule of 4).
@@ -224,6 +227,27 @@ impl RelayLedger {
                 expires_unix INTEGER NOT NULL DEFAULT 0,
                 created_unix INTEGER NOT NULL
             )",
+            "CREATE TABLE IF NOT EXISTS relay_model_pricing (
+                model_id TEXT PRIMARY KEY,
+                billing_mode TEXT NOT NULL DEFAULT 'token',
+                input_per_m INTEGER NOT NULL DEFAULT 0,
+                output_per_m INTEGER NOT NULL DEFAULT 0,
+                unit_credits INTEGER NOT NULL DEFAULT 0,
+                allow_free INTEGER NOT NULL DEFAULT 0,
+                updated_unix INTEGER NOT NULL
+            )",
+            "CREATE TABLE IF NOT EXISTS relay_async_tasks (
+                id TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                task_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                provider_op TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                credits_charged INTEGER NOT NULL DEFAULT 0,
+                result_json TEXT NOT NULL DEFAULT '{}',
+                created_unix INTEGER NOT NULL,
+                updated_unix INTEGER NOT NULL
+            )",
         ];
         for s in stmts {
             self.conn.execute(s, ()).await.map_err(map_db)?;
@@ -231,6 +255,8 @@ impl RelayLedger {
         // Safe migrations for existing production DBs
         let _ = self.conn.execute("ALTER TABLE relay_keys ADD COLUMN allowed_ips TEXT NOT NULL DEFAULT ''", ()).await;
         let _ = self.conn.execute("ALTER TABLE relay_keys ADD COLUMN expired_unix INTEGER NOT NULL DEFAULT 0", ()).await;
+        let _ = self.conn.execute("ALTER TABLE relay_channels ADD COLUMN model_mapping TEXT NOT NULL DEFAULT '{}'", ()).await;
+        let _ = self.conn.execute("ALTER TABLE relay_channels ADD COLUMN daily_limit INTEGER NOT NULL DEFAULT 0", ()).await;
         Ok(())
     }
 
@@ -599,14 +625,18 @@ impl RelayLedger {
         }
         let models = req.routing.models.join(",");
         let en = i64::from(req.routing.enabled);
+        let mapping_json = serde_json::to_string(&req.endpoint.policy.model_mapping)
+            .unwrap_or_else(|_| "{}".to_string());
+        let daily_limit = req.endpoint.policy.daily_limit as i64;
         self.conn
             .execute(
-                "INSERT INTO relay_channels (id, name, provider, base_url, api_key, models, priority, weight, enabled, latency_ms, created_unix)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10)
+                "INSERT INTO relay_channels (id, name, provider, base_url, api_key, models, priority, weight, enabled, latency_ms, created_unix, model_mapping, daily_limit)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, ?12)
                  ON CONFLICT(id) DO UPDATE SET
                    name=excluded.name, provider=excluded.provider, base_url=excluded.base_url,
                    api_key=CASE WHEN excluded.api_key='' THEN relay_channels.api_key ELSE excluded.api_key END,
-                   models=excluded.models, priority=excluded.priority, weight=excluded.weight, enabled=excluded.enabled",
+                   models=excluded.models, priority=excluded.priority, weight=excluded.weight, enabled=excluded.enabled,
+                   model_mapping=excluded.model_mapping, daily_limit=excluded.daily_limit",
                 (
                     id,
                     req.endpoint.name.trim(),
@@ -618,6 +648,8 @@ impl RelayLedger {
                     req.routing.weight as i64,
                     en,
                     now_unix(),
+                    mapping_json.as_str(),
+                    daily_limit,
                 ),
             )
             .await
@@ -629,7 +661,7 @@ impl RelayLedger {
         let mut rows = self
             .conn
             .query(
-                "SELECT id, name, provider, base_url, models, priority, enabled FROM relay_channels ORDER BY priority DESC, id ASC",
+                "SELECT id, name, provider, base_url, models, priority, enabled, COALESCE(model_mapping, '{}'), COALESCE(daily_limit, 0) FROM relay_channels ORDER BY priority DESC, id ASC",
                 (),
             )
             .await
@@ -642,6 +674,8 @@ impl RelayLedger {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
+            let model_mapping = serde_json::from_str(&col_str(&row, 7)).unwrap_or_default();
+            let daily_limit = col_u64(&row, 8);
             out.push(ChannelRecord {
                 id: col_str(&row, 0),
                 provider: col_str(&row, 2),
@@ -652,6 +686,7 @@ impl RelayLedger {
                     priority: col_u64(&row, 5) as i32,
                     enabled: col_u64(&row, 6) != 0,
                 },
+                policy: ChannelPolicy { model_mapping, daily_limit },
             });
         }
         Ok(out)
@@ -670,7 +705,7 @@ impl RelayLedger {
         let mut rows = self
             .conn
             .query(
-                "SELECT id, provider, base_url, api_key, models FROM relay_channels WHERE enabled = 1 ORDER BY priority DESC, weight DESC",
+                "SELECT id, provider, base_url, api_key, models, COALESCE(model_mapping, '{}'), COALESCE(daily_limit, 0) FROM relay_channels WHERE enabled = 1 ORDER BY priority DESC, weight DESC",
                 (),
             )
             .await
@@ -687,11 +722,14 @@ impl RelayLedger {
                 });
             let api_key = col_str(&row, 3);
             if matched && !api_key.is_empty() {
+                let model_mapping = serde_json::from_str(&col_str(&row, 5)).unwrap_or_default();
+                let daily_limit = col_u64(&row, 6);
                 out.push(LiveChannel {
                     id: col_str(&row, 0),
                     provider: col_str(&row, 1),
                     base_url: col_str(&row, 2),
                     api_key: SecretString::from(api_key),
+                    policy: ChannelPolicy { model_mapping, daily_limit },
                 });
             }
         }
@@ -977,20 +1015,242 @@ impl RelayLedger {
         Ok(exp)
     }
 
-    /// Fetch a single live channel by id via sea-query for probing & balance check.
+    /// Fetch a single live channel by id for probing & balance check.
     pub async fn get_live_channel(&self, id: &str) -> Result<LiveChannel, RelayError> {
-        let q = query::sql_get_channel_by_id();
-        let mut rows = self.conn.query(&q, [id]).await.map_err(map_db)?;
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, provider, base_url, api_key, COALESCE(model_mapping, '{}'), COALESCE(daily_limit, 0) FROM relay_channels WHERE id = ?1",
+                [id],
+            )
+            .await
+            .map_err(map_db)?;
         let row = rows
             .next()
             .await
             .map_err(map_db)?
             .ok_or_else(|| RelayError::ModelNotFound(format!("channel {id} not found")))?;
+        let model_mapping = serde_json::from_str(&col_str(&row, 4)).unwrap_or_default();
+        let daily_limit = col_u64(&row, 5);
         Ok(LiveChannel {
             id: col_str(&row, 0),
             provider: col_str(&row, 1),
             base_url: col_str(&row, 2),
             api_key: SecretString::from(col_str(&row, 3)),
+            policy: ChannelPolicy { model_mapping, daily_limit },
+        })
+    }
+
+    /// Persist a live admin model pricing override (takes effect immediately without restart).
+    pub async fn upsert_model_pricing(&self, ov: &ModelPricingOverride) -> Result<(), RelayError> {
+        let mid = ov.model_id.trim();
+        if mid.is_empty() {
+            return Err(RelayError::InvalidInput("model_id required".into()));
+        }
+        let mode_str = match ov.billing_mode {
+            BillingMode::Token => "token",
+            BillingMode::PerCall => "per_call",
+            BillingMode::PerSecond => "per_second",
+        };
+        self.conn
+            .execute(
+                "INSERT INTO relay_model_pricing (model_id, billing_mode, input_per_m, output_per_m, unit_credits, allow_free, updated_unix)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(model_id) DO UPDATE SET
+                   billing_mode=excluded.billing_mode, input_per_m=excluded.input_per_m,
+                   output_per_m=excluded.output_per_m, unit_credits=excluded.unit_credits,
+                   allow_free=excluded.allow_free, updated_unix=excluded.updated_unix",
+                (
+                    mid,
+                    mode_str,
+                    ov.rates.input_per_m as i64,
+                    ov.rates.output_per_m as i64,
+                    ov.rates.unit_credits as i64,
+                    i64::from(ov.rates.allow_free),
+                    now_unix(),
+                ),
+            )
+            .await
+            .map_err(map_db)?;
+        Ok(())
+    }
+
+    pub async fn delete_model_pricing(&self, model_id: &str) -> Result<(), RelayError> {
+        self.conn
+            .execute("DELETE FROM relay_model_pricing WHERE model_id = ?1", [model_id.trim()])
+            .await
+            .map_err(map_db)?;
+        Ok(())
+    }
+
+    pub async fn list_model_pricing(&self) -> Result<Vec<ModelPricingOverride>, RelayError> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT model_id, billing_mode, input_per_m, output_per_m, unit_credits, allow_free FROM relay_model_pricing",
+                (),
+            )
+            .await
+            .map_err(map_db)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(map_db)? {
+            let billing_mode = match col_str(&row, 1).as_str() {
+                "per_call" => BillingMode::PerCall,
+                "per_second" => BillingMode::PerSecond,
+                _ => BillingMode::Token,
+            };
+            out.push(ModelPricingOverride {
+                model_id: col_str(&row, 0),
+                billing_mode,
+                rates: ModelRateSpec {
+                    input_per_m: col_u64(&row, 2),
+                    output_per_m: col_u64(&row, 3),
+                    unit_credits: col_u64(&row, 4),
+                    allow_free: col_u64(&row, 5) != 0,
+                },
+            });
+        }
+        Ok(out)
+    }
+
+    /// Create a unified async multimodal task entry (video / music / image).
+    pub async fn create_async_task(
+        &self,
+        meta: &AsyncTaskMeta,
+        credits_charged: u64,
+        result_json: &str,
+    ) -> Result<AsyncTaskRecord, RelayError> {
+        let ts = now_unix();
+        let seed = format!("task:{}:{}:{}:{ts}", meta.username, meta.model, meta.provider_op);
+        let id = format!("task_{}", &sha256_b64(&seed)[..16]);
+        let status = if meta.task_type == "video" { "queued" } else { "succeeded" };
+        self.conn
+            .execute(
+                "INSERT INTO relay_async_tasks (id, username, task_type, model, provider_op, status, credits_charged, result_json, created_unix, updated_unix)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+                (
+                    id.as_str(),
+                    meta.username.trim().to_ascii_lowercase().as_str(),
+                    meta.task_type.as_str(),
+                    meta.model.as_str(),
+                    meta.provider_op.as_str(),
+                    status,
+                    credits_charged as i64,
+                    result_json,
+                    ts,
+                ),
+            )
+            .await
+            .map_err(map_db)?;
+        Ok(AsyncTaskRecord {
+            id,
+            status: status.to_string(),
+            meta: meta.clone(),
+            result: AsyncTaskResult {
+                credits_charged,
+                result_json: result_json.to_string(),
+                created_unix: ts,
+                updated_unix: ts,
+            },
+        })
+    }
+
+    pub async fn update_async_task_by_op(
+        &self,
+        provider_op: &str,
+        status: &str,
+        result_json: &str,
+    ) -> Result<(), RelayError> {
+        self.conn
+            .execute(
+                "UPDATE relay_async_tasks SET status = ?1, result_json = ?2, updated_unix = ?3 WHERE provider_op = ?4",
+                (status, result_json, now_unix(), provider_op.trim()),
+            )
+            .await
+            .map_err(map_db)?;
+        Ok(())
+    }
+
+    pub async fn list_async_tasks(
+        &self,
+        username: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<AsyncTaskRecord>, RelayError> {
+        let lim = limit.clamp(1, 100);
+        let mut rows = match username {
+            Some(u) => {
+                let low = u.trim().to_ascii_lowercase();
+                self.conn
+                    .query(
+                        "SELECT id, status, username, task_type, model, provider_op, credits_charged, result_json, created_unix, updated_unix
+                         FROM relay_async_tasks WHERE username = ?1 ORDER BY created_unix DESC LIMIT ?2",
+                        (low.as_str(), lim),
+                    )
+                    .await
+                    .map_err(map_db)?
+            }
+            None => self
+                .conn
+                .query(
+                    "SELECT id, status, username, task_type, model, provider_op, credits_charged, result_json, created_unix, updated_unix
+                     FROM relay_async_tasks ORDER BY created_unix DESC LIMIT ?1",
+                    [lim],
+                )
+                .await
+                .map_err(map_db)?,
+        };
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(map_db)? {
+            out.push(AsyncTaskRecord {
+                id: col_str(&row, 0),
+                status: col_str(&row, 1),
+                meta: AsyncTaskMeta {
+                    username: col_str(&row, 2),
+                    task_type: col_str(&row, 3),
+                    model: col_str(&row, 4),
+                    provider_op: col_str(&row, 5),
+                },
+                result: AsyncTaskResult {
+                    credits_charged: col_u64(&row, 6),
+                    result_json: col_str(&row, 7),
+                    created_unix: col_u64(&row, 8) as i64,
+                    updated_unix: col_u64(&row, 9) as i64,
+                },
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn get_async_task(&self, id: &str) -> Result<AsyncTaskRecord, RelayError> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, status, username, task_type, model, provider_op, credits_charged, result_json, created_unix, updated_unix
+                 FROM relay_async_tasks WHERE id = ?1",
+                [id.trim()],
+            )
+            .await
+            .map_err(map_db)?;
+        let row = rows
+            .next()
+            .await
+            .map_err(map_db)?
+            .ok_or_else(|| RelayError::ModelNotFound(format!("task {id} not found")))?;
+        Ok(AsyncTaskRecord {
+            id: col_str(&row, 0),
+            status: col_str(&row, 1),
+            meta: AsyncTaskMeta {
+                username: col_str(&row, 2),
+                task_type: col_str(&row, 3),
+                model: col_str(&row, 4),
+                provider_op: col_str(&row, 5),
+            },
+            result: AsyncTaskResult {
+                credits_charged: col_u64(&row, 6),
+                result_json: col_str(&row, 7),
+                created_unix: col_u64(&row, 8) as i64,
+                updated_unix: col_u64(&row, 9) as i64,
+            },
         })
     }
 
@@ -1135,5 +1395,80 @@ mod tests {
         assert_eq!(db.get_wallet("bob").await.unwrap().paid_credits, 1080);
         db.refund_hold(&hold, "gemini-2.5-flash").await.unwrap();
         assert_eq!(db.get_wallet("bob").await.unwrap().paid_credits, 1100);
+    }
+
+    #[tokio::test]
+    async fn channel_policy_live_pricing_and_async_tasks_work() {
+        let db = RelayLedger::open(":memory:").await.unwrap();
+        let mut mapping = std::collections::HashMap::new();
+        mapping.insert("deepseek-v3".to_string(), "deepseek-v4.1-flash".to_string());
+        db.upsert_channel(&ChannelUpsertReq {
+            id: "ch-map-1".into(),
+            provider: "openai_compat".into(),
+            endpoint: relay_core::ChannelEndpoint {
+                name: "Mapped Pool".into(),
+                base_url: "https://api.example.com/v1".into(),
+                api_key: "sk-test-secret".into(),
+                policy: ChannelPolicy {
+                    model_mapping: mapping,
+                    daily_limit: 50,
+                },
+            },
+            routing: relay_core::ChannelRouting {
+                models: vec!["deepseek-v3".into()],
+                priority: 95,
+                weight: 100,
+                enabled: true,
+            },
+        })
+        .await
+        .unwrap();
+
+        let live = db.find_live_channels("deepseek-v3").await.unwrap();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].policy.daily_limit, 50);
+        assert_eq!(
+            live[0].policy.model_mapping.get("deepseek-v3").map(String::as_str),
+            Some("deepseek-v4.1-flash")
+        );
+
+        let ov = ModelPricingOverride {
+            model_id: "veo-3.1-fast-generate-001".into(),
+            billing_mode: BillingMode::PerSecond,
+            rates: ModelRateSpec {
+                input_per_m: 150,
+                output_per_m: 150,
+                unit_credits: 10,
+                allow_free: false,
+            },
+        };
+        assert!(!ov.anomaly_warnings().is_empty());
+        db.upsert_model_pricing(&ov).await.unwrap();
+        assert_eq!(db.list_model_pricing().await.unwrap().len(), 1);
+
+        let task = db
+            .create_async_task(
+                &AsyncTaskMeta {
+                    username: "alice".into(),
+                    task_type: "video".into(),
+                    model: "veo-3.1-fast-generate-001".into(),
+                    provider_op: "projects/p/locations/us-central1/operations/op1".into(),
+                },
+                80,
+                "{}",
+            )
+            .await
+            .unwrap();
+        assert_eq!(task.status, "queued");
+        db.update_async_task_by_op(
+            "projects/p/locations/us-central1/operations/op1",
+            "succeeded",
+            "{\"done\":true}",
+        )
+        .await
+        .unwrap();
+        let fetched = db.get_async_task(&task.id).await.unwrap();
+        assert_eq!(fetched.status, "succeeded");
+        assert_eq!(db.list_async_tasks(Some("alice"), 10).await.unwrap().len(), 1);
     }
 }

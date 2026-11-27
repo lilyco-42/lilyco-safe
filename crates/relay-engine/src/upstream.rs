@@ -4,7 +4,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use dashmap::DashMap;
 use relay_core::{
     AudioSpeechReq, BillingMode, ChannelConfig, ChannelProbeResult, ChatReq, ImageGenReq,
-    MediaProtocol, ModelConfig, ModelsCatalog, MusicGenReq, RelayError, TokenUsage, VideoGenReq,
+    MediaProtocol, ModelConfig, ModelPricingOverride, ModelsCatalog, MusicGenReq, RelayError,
+    TokenUsage, VideoGenReq,
 };
 use reqwest::Client;
 use secrecy::ExposeSecret;
@@ -57,12 +58,20 @@ struct OpenAiResp {
     usage: Option<OpenAiUsage>,
 }
 
-/// Multi-upstream router with lock-free DashMap circuit-breaker & dynamic model cache (4 fields, Rule of 4).
+/// Lock-free runtime state maps (4 fields, Rule of 4).
+#[derive(Default)]
+struct RouterState {
+    cooldowns: DashMap<String, u64>,
+    dynamic_models: DashMap<String, ModelConfig>,
+    pricing_overrides: DashMap<String, ModelPricingOverride>,
+    daily_counts: DashMap<String, (u64, u64)>,
+}
+
+/// Multi-upstream router with lock-free circuit-breaker, dynamic pricing & channel quotas (3 fields, Rule of 4).
 pub struct UpstreamRouter {
     client: Client,
     catalog: ModelsCatalog,
-    cooldowns: DashMap<String, u64>,
-    dynamic_models: DashMap<String, ModelConfig>,
+    state: RouterState,
 }
 
 fn now_unix() -> u64 {
@@ -70,6 +79,21 @@ fn now_unix() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn utc_day() -> u64 {
+    now_unix() / 86_400
+}
+
+fn apply_channel_mapping(lc: &LiveChannel, model: &ModelConfig) -> ModelConfig {
+    if let Some(mapped) = lc.policy.model_mapping.get(&model.id)
+        && !mapped.trim().is_empty()
+    {
+        let mut cloned = model.clone();
+        cloned.upstream_model = mapped.trim().to_string();
+        return cloned;
+    }
+    model.clone()
 }
 
 impl UpstreamRouter {
@@ -89,9 +113,51 @@ impl UpstreamRouter {
         Ok(Self {
             client,
             catalog,
-            cooldowns: DashMap::new(),
-            dynamic_models: DashMap::new(),
+            state: RouterState::default(),
         })
+    }
+
+    /// Hot-apply a model pricing override in memory (zero restart).
+    pub fn set_pricing_override(&self, ov: ModelPricingOverride) {
+        self.state.pricing_overrides.insert(ov.model_id.clone(), ov);
+    }
+
+    pub fn clear_pricing_override(&self, model_id: &str) {
+        self.state.pricing_overrides.remove(model_id);
+    }
+
+    pub fn load_pricing_overrides(&self, list: Vec<ModelPricingOverride>) {
+        for ov in list {
+            self.set_pricing_override(ov);
+        }
+    }
+
+    fn apply_pricing(&self, mut m: ModelConfig) -> ModelConfig {
+        if let Some(ov) = self.state.pricing_overrides.get(&m.id) {
+            m.billing_mode = ov.billing_mode;
+            m.input_per_m = ov.rates.input_per_m;
+            m.output_per_m = ov.rates.output_per_m;
+            m.unit_credits = ov.rates.unit_credits;
+            m.allow_free = ov.rates.allow_free;
+        }
+        m
+    }
+
+    fn try_consume_channel_quota(&self, lc: &LiveChannel) -> bool {
+        if lc.policy.daily_limit == 0 {
+            return true;
+        }
+        let today = utc_day();
+        let mut entry = self.state.daily_counts.entry(lc.id.clone()).or_insert((today, 0));
+        if entry.0 != today {
+            entry.0 = today;
+            entry.1 = 0;
+        }
+        if entry.1 >= lc.policy.daily_limit {
+            return false;
+        }
+        entry.1 += 1;
+        true
     }
 
     fn resolve_upstream_model(ch: &ChannelConfig, model: &ModelConfig) -> String {
@@ -122,24 +188,33 @@ impl UpstreamRouter {
         &self.catalog
     }
 
-    /// Merged view of static `models.toml` + dynamically synced upstream models.
+    /// Merged view of static `models.toml` + dynamically synced upstream models + live pricing overrides.
     pub fn all_models(&self) -> Vec<ModelConfig> {
-        let mut out = self.catalog.models.clone();
-        for entry in self.dynamic_models.iter() {
+        let mut out: Vec<ModelConfig> = self
+            .catalog
+            .models
+            .iter()
+            .cloned()
+            .map(|m| self.apply_pricing(m))
+            .collect();
+        for entry in self.state.dynamic_models.iter() {
             let m = entry.value();
             if !out.iter().any(|existing| existing.id == m.id) {
-                out.push(m.clone());
+                out.push(self.apply_pricing(m.clone()));
             }
         }
         out
     }
 
-    /// Look up a model across both static catalog and dynamically synced models.
+    /// Look up a model across both static catalog and dynamically synced models with live pricing overrides.
     pub fn find_model(&self, id: &str) -> Option<ModelConfig> {
         if let Some(m) = self.catalog.find_model(id) {
-            return Some(m.clone());
+            return Some(self.apply_pricing(m.clone()));
         }
-        self.dynamic_models.get(id).map(|v| v.value().clone())
+        self.state
+            .dynamic_models
+            .get(id)
+            .map(|v| self.apply_pricing(v.value().clone()))
     }
 
     /// Dynamically pull `/models` from a live upstream channel and merge new models into memory.
@@ -194,7 +269,7 @@ impl UpstreamRouter {
                 continue;
             }
             let free_flag = is_free_pool || clean.ends_with(":free");
-            self.dynamic_models.insert(
+            self.state.dynamic_models.insert(
                 model_id.clone(),
                 ModelConfig {
                     id: model_id,
@@ -334,13 +409,14 @@ impl UpstreamRouter {
 
     fn is_cooled(&self, channel_id: &str) -> bool {
         let now = now_unix();
-        self.cooldowns
+        self.state
+            .cooldowns
             .get(channel_id)
             .is_some_and(|until| *until > now)
     }
 
     fn trip_cooldown(&self, channel_id: &str, secs: u64) {
-        self.cooldowns.insert(channel_id.to_string(), now_unix() + secs);
+        self.state.cooldowns.insert(channel_id.to_string(), now_unix() + secs);
     }
 
     /// Try all DB-backed pool channels first (automatic failover on 429/5xx), then fall back to TOML env channel.
@@ -352,9 +428,10 @@ impl UpstreamRouter {
     ) -> Result<UpstreamReply, RelayError> {
         let mut last_err: Option<RelayError> = None;
         for lc in pool {
-            if self.is_cooled(&lc.id) {
+            if self.is_cooled(&lc.id) || !self.try_consume_channel_quota(lc) {
                 continue;
             }
+            let effective = apply_channel_mapping(lc, model);
             let ch = ChannelConfig {
                 id: lc.id.clone(),
                 provider: lc.provider.clone(),
@@ -363,7 +440,7 @@ impl UpstreamRouter {
                 weight: 100,
                 enabled: true,
             };
-            match self.send_openai_compat(&ch, model, req, lc.api_key.expose_secret()).await {
+            match self.send_openai_compat(&ch, &effective, req, lc.api_key.expose_secret()).await {
                 Ok(reply) => return Ok(reply),
                 Err(e) => last_err = Some(e),
             }
@@ -383,9 +460,10 @@ impl UpstreamRouter {
     ) -> Result<reqwest::Response, RelayError> {
         let mut last_err: Option<RelayError> = None;
         for lc in pool {
-            if self.is_cooled(&lc.id) {
+            if self.is_cooled(&lc.id) || !self.try_consume_channel_quota(lc) {
                 continue;
             }
+            let effective = apply_channel_mapping(lc, model);
             let ch = ChannelConfig {
                 id: lc.id.clone(),
                 provider: lc.provider.clone(),
@@ -394,7 +472,7 @@ impl UpstreamRouter {
                 weight: 100,
                 enabled: true,
             };
-            match self.open_openai_stream(&ch, model, req, lc.api_key.expose_secret()).await {
+            match self.open_openai_stream(&ch, &effective, req, lc.api_key.expose_secret()).await {
                 Ok(resp) => return Ok(resp),
                 Err(e) => last_err = Some(e),
             }
@@ -629,15 +707,20 @@ impl UpstreamRouter {
             }));
         }
         for ch in pool {
-            if self.is_cooled(&ch.id) {
+            if self.is_cooled(&ch.id) || !self.try_consume_channel_quota(ch) {
                 continue;
+            }
+            let effective = apply_channel_mapping(ch, model);
+            let mut ch_payload = payload.clone();
+            if let Some(obj) = ch_payload.as_object_mut() {
+                obj.insert("model".into(), serde_json::Value::String(effective.upstream_model));
             }
             let url = format!("{}/{}", ch.base_url.trim_end_matches('/'), path_suffix.trim_start_matches('/'));
             match self
                 .client
                 .post(&url)
                 .bearer_auth(ch.api_key.expose_secret())
-                .json(&payload)
+                .json(&ch_payload)
                 .send()
                 .await
             {
@@ -784,10 +867,11 @@ impl UpstreamRouter {
     ) -> Result<serde_json::Value, RelayError> {
         let mut last_err = None;
         for ch in pool.iter().filter(|c| gemini_adapter::is_gemini_channel(c)) {
-            if self.is_cooled(&ch.id) {
+            if self.is_cooled(&ch.id) || !self.try_consume_channel_quota(ch) {
                 continue;
             }
-            match gemini_adapter::passthrough_v1beta(&self.client, ch, &model.upstream_model, action, payload).await {
+            let effective = apply_channel_mapping(ch, model);
+            match gemini_adapter::passthrough_v1beta(&self.client, ch, &effective.upstream_model, action, payload).await {
                 Ok(v) => return Ok(v),
                 Err(e) => {
                     if e.to_string().contains("429") || e.to_string().contains("50") {

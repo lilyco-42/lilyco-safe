@@ -10,10 +10,11 @@ use axum::Json;
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use relay_core::{
-    ActivateTrialReq, AdminRoleUpdateReq, AnthropicMsgReq, AudioSpeechReq, ChannelUpsertReq,
-    ChatReq, ClientIp, EmbeddingReq, ImageGenReq, KeyIssueReq, MusicGenReq, PortalAuthReq,
-    PricingRate, RedeemCodeReq, RedemptionCreateReq, RelayError, RerankReq, ResellKeyBatchReq,
-    TokenUsage, UserRole, UserRolePolicy, VideoGenReq,
+    ActivateTrialReq, AdminRoleUpdateReq, AnthropicMsgReq, AsyncTaskMeta, AudioSpeechReq,
+    ChannelUpsertReq, ChatReq, ClientIp, EmbeddingReq, ImageGenReq, KeyIssueReq,
+    ModelPricingOverride, MusicGenReq, PortalAuthReq, PricingRate, RedeemCodeReq,
+    RedemptionCreateReq, RelayError, RerankReq, ResellKeyBatchReq, TokenUsage, UserRole,
+    UserRolePolicy, VideoGenReq,
 };
 use relay_engine::{HoldReceipt, UpstreamReply};
 use serde::Deserialize;
@@ -727,7 +728,7 @@ async fn run_paid_multimodal<F, Fut>(
     client: (&ClientIp, &HeaderMap),
     billing: (&str, u64),
     call: F,
-) -> Result<serde_json::Value, RelayError>
+) -> Result<(serde_json::Value, String, u64), RelayError>
 where
     F: FnOnce(relay_core::ModelConfig, Vec<relay_engine::LiveChannel>) -> Fut,
     Fut: Future<Output = Result<serde_json::Value, RelayError>>,
@@ -754,10 +755,11 @@ where
     let hold = st.ledger.pre_hold_paid(&verified.record, hold_cost).await?;
     let pool = st.ledger.find_live_channels(&model.id).await.unwrap_or_default();
     let mid = model.id.clone();
+    let username = verified.record.username.clone();
     match call(model, pool).await {
         Ok(val) => {
             let _ = st.ledger.settle_hold(&hold, &mid, TokenUsage::default(), hold_cost).await;
-            Ok(val)
+            Ok((val, username, hold_cost))
         }
         Err(e) => {
             let _ = st.ledger.refund_hold(&hold, &mid).await;
@@ -786,7 +788,7 @@ pub async fn api_audio_speech(
     })
     .await
     {
-        Ok(v) => Json(v).into_response(),
+        Ok((v, _, _)) => Json(v).into_response(),
         Err(e) => st.err_response(&headers, e),
     }
 }
@@ -811,7 +813,26 @@ pub async fn api_music_generations(
     })
     .await
     {
-        Ok(v) => Json(v).into_response(),
+        Ok((mut v, username, cost)) => {
+            if let Ok(task) = st
+                .ledger
+                .create_async_task(
+                    &AsyncTaskMeta {
+                        username,
+                        task_type: "music".into(),
+                        model: model_id,
+                        provider_op: format!("music:{}", v.get("created").and_then(|x| x.as_u64()).unwrap_or(0)),
+                    },
+                    cost,
+                    "{\"ok\":true,\"format\":\"wav\"}",
+                )
+                .await
+                && let Some(obj) = v.as_object_mut()
+            {
+                obj.insert("task_id".into(), json!(task.id));
+            }
+            Json(v).into_response()
+        }
         Err(e) => st.err_response(&headers, e),
     }
 }
@@ -837,7 +858,28 @@ pub async fn api_video_generations(
     })
     .await
     {
-        Ok(v) => Json(v).into_response(),
+        Ok((mut v, username, cost)) => {
+            let op_name = v.get("operation").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            if !op_name.is_empty()
+                && let Ok(task) = st
+                    .ledger
+                    .create_async_task(
+                        &AsyncTaskMeta {
+                            username,
+                            task_type: "video".into(),
+                            model: model_id,
+                            provider_op: op_name,
+                        },
+                        cost,
+                        "{}",
+                    )
+                    .await
+                && let Some(obj) = v.as_object_mut()
+            {
+                obj.insert("task_id".into(), json!(task.id));
+            }
+            Json(v).into_response()
+        }
         Err(e) => st.err_response(&headers, e),
     }
 }
@@ -1041,7 +1083,15 @@ pub async fn api_video_operation(
     }
     let pool = st.ledger.find_live_channels("veo-2.0-generate-001").await.unwrap_or_default();
     match st.router.poll_video_with_pool(&op, &pool).await {
-        Ok(v) => Json(v).into_response(),
+        Ok(v) => {
+            if v.get("done").and_then(|x| x.as_bool()).unwrap_or(false) {
+                let status = if v.get("error").is_some() { "failed" } else { "succeeded" };
+                let summary = serde_json::to_string(&v).unwrap_or_else(|_| "{}".into());
+                let trimmed = if summary.len() > 4000 { &summary[..4000] } else { &summary };
+                let _ = st.ledger.update_async_task_by_op(&op, status, trimmed).await;
+            }
+            Json(v).into_response()
+        }
         Err(e) => st.err_response(&headers, e),
     }
 }
@@ -1572,6 +1622,85 @@ pub async fn api_admin_update_role(
     }
     match st.ledger.set_user_role(&req).await {
         Ok(policy) => Json(json!({ "ok": true, "username": req.username, "policy": policy })).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+/// Admin live model pricing update (persists to DB + hot-applies in memory with zero restart).
+pub async fn api_admin_upsert_pricing(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<ModelPricingOverride>,
+) -> Response {
+    if let Err(e) = verify_admin_access(&st, &headers).await {
+        return st.err_response(&headers, e);
+    }
+    let warnings = req.anomaly_warnings();
+    if let Err(e) = st.ledger.upsert_model_pricing(&req).await {
+        return st.err_response(&headers, e);
+    }
+    st.router.set_pricing_override(req.clone());
+    Json(json!({ "ok": true, "override": req, "warnings": warnings })).into_response()
+}
+
+/// Admin reset model pricing back to `config/models.toml` default.
+pub async fn api_admin_delete_pricing(
+    State(st): State<AppState>,
+    Path(model_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(e) = verify_admin_access(&st, &headers).await {
+        return st.err_response(&headers, e);
+    }
+    if let Err(e) = st.ledger.delete_model_pricing(&model_id).await {
+        return st.err_response(&headers, e);
+    }
+    st.router.clear_pricing_override(&model_id);
+    Json(json!({ "ok": true, "reset": model_id })).into_response()
+}
+
+/// Unified async multimodal task list (Admin sees all; authenticated user sees own tasks).
+pub async fn api_list_tasks(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    if verify_admin_access(&st, &headers).await.is_ok() {
+        return match st.ledger.list_async_tasks(None, 50).await {
+            Ok(tasks) => Json(json!({ "ok": true, "scope": "all", "tasks": tasks })).into_response(),
+            Err(e) => st.err_response(&headers, e),
+        };
+    }
+    let uname = match resolve_portal_user(&st, &headers).await {
+        Ok(u) => u,
+        Err(e) => return st.err_response(&headers, e),
+    };
+    match st.ledger.list_async_tasks(Some(&uname), 50).await {
+        Ok(tasks) => Json(json!({ "ok": true, "scope": "own", "tasks": tasks })).into_response(),
+        Err(e) => st.err_response(&headers, e),
+    }
+}
+
+/// Unified async multimodal task detail by task ID.
+pub async fn api_get_task(
+    State(st): State<AppState>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let is_admin = verify_admin_access(&st, &headers).await.is_ok();
+    let owner = if is_admin {
+        None
+    } else {
+        match resolve_portal_user(&st, &headers).await {
+            Ok(u) => Some(u),
+            Err(e) => return st.err_response(&headers, e),
+        }
+    };
+    match st.ledger.get_async_task(&task_id).await {
+        Ok(task) => {
+            if let Some(u) = owner
+                && !task.meta.username.eq_ignore_ascii_case(&u)
+            {
+                return st.err_response(&headers, RelayError::Forbidden("task belongs to another user".into()));
+            }
+            Json(json!({ "ok": true, "task": task })).into_response()
+        }
         Err(e) => st.err_response(&headers, e),
     }
 }

@@ -108,6 +108,8 @@ fn admin_routes(web_dir: String) -> Router<AppState> {
         .route("/api/v1/trial-cards/activate", post(handlers::api_activate_trial_card))
         .route("/api/v1/dashboard/stats", get(handlers::api_dashboard_stats))
         .route("/api/v1/logs", get(handlers::api_usage_logs))
+        .route("/api/v1/tasks", get(handlers::api_list_tasks))
+        .route("/api/v1/tasks/{id}", get(handlers::api_get_task))
         .route("/api/v1/keys", post(handlers::api_issue_key))
         .route("/api/v1/keys/revoke", post(handlers::api_revoke_key))
         .route("/api/v1/redeem", post(handlers::api_redeem))
@@ -117,6 +119,8 @@ fn admin_routes(web_dir: String) -> Router<AppState> {
         .route("/api/v1/admin/channels/{id}", delete(handlers::api_admin_delete_channel))
         .route("/api/v1/admin/channels/{id}/probe", post(handlers::api_admin_probe_channel))
         .route("/api/v1/admin/models/sync", post(handlers::api_admin_sync_models))
+        .route("/api/v1/admin/models/pricing", post(handlers::api_admin_upsert_pricing))
+        .route("/api/v1/admin/models/pricing/{model}", delete(handlers::api_admin_delete_pricing))
         .route("/api/v1/admin/resell/keys", post(handlers::api_admin_mint_resell_keys))
         .route("/api/v1/admin/users", get(handlers::api_admin_list_users))
         .route("/api/v1/admin/users/role", post(handlers::api_admin_update_role))
@@ -153,6 +157,9 @@ pub async fn init_state(cfg_path: &Path) -> Result<AppState, RelayError> {
     let ledger = RelayLedger::open(&cfg.storage.db_path).await?;
     let risk = Arc::new(RiskEngine::new(&cfg.risk, &cfg.security));
     let router = Arc::new(UpstreamRouter::new(catalog)?);
+    if let Ok(overrides) = ledger.list_model_pricing().await {
+        router.load_pricing_overrides(overrides);
+    }
     let runtime = Arc::new(RuntimeBundle {
         cfg,
         i18n,

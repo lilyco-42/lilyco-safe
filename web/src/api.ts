@@ -98,11 +98,34 @@ export interface DashboardStatsResp {
   risk: RiskStats;
 }
 
+export interface ChannelPolicy {
+  model_mapping: Record<string, string>;
+  daily_limit: number;
+}
+
 export interface ChannelItem {
   id: string;
   provider: string;
   base_url: string;
   meta: { name: string; models: string[]; priority: number; enabled: boolean };
+  policy?: ChannelPolicy;
+}
+
+export interface AsyncTaskRecord {
+  id: string;
+  status: string;
+  meta: {
+    username: string;
+    task_type: string;
+    model: string;
+    provider_op: string;
+  };
+  result: {
+    credits_charged: number;
+    result_json: string;
+    created_unix: number;
+    updated_unix: number;
+  };
 }
 
 export interface AdminUserSummary {
@@ -415,7 +438,7 @@ export async function adminUpsertChannel(
   payload: {
     id: string;
     provider: string;
-    endpoint: { name: string; base_url: string; api_key: string };
+    endpoint: { name: string; base_url: string; api_key: string; policy?: ChannelPolicy };
     routing: { models: string[]; priority: number; weight: number; enabled: boolean };
   },
 ): Promise<void> {
@@ -424,6 +447,53 @@ export async function adminUpsertChannel(
       method: "POST",
       headers: adminHeaders(jwt, adminKey),
       body: JSON.stringify(payload),
+    }),
+  );
+}
+
+export async function adminUpsertModelPricing(
+  jwt: string,
+  adminKey: string,
+  payload: {
+    model_id: string;
+    billing_mode: BillingMode;
+    rates: {
+      input_per_m: number;
+      output_per_m: number;
+      unit_credits: number;
+      allow_free: boolean;
+    };
+  },
+): Promise<{ warnings: string[] }> {
+  return parseJson(
+    await fetch(`${API_BASE}/api/v1/admin/models/pricing`, {
+      method: "POST",
+      headers: adminHeaders(jwt, adminKey),
+      body: JSON.stringify(payload),
+    }),
+  );
+}
+
+export async function adminResetModelPricing(
+  jwt: string,
+  adminKey: string,
+  modelId: string,
+): Promise<void> {
+  await parseJson(
+    await fetch(`${API_BASE}/api/v1/admin/models/pricing/${encodeURIComponent(modelId)}`, {
+      method: "DELETE",
+      headers: adminHeaders(jwt, adminKey),
+    }),
+  );
+}
+
+export async function fetchAsyncTasks(
+  jwt: string,
+  adminKey = "",
+): Promise<{ scope: string; tasks: AsyncTaskRecord[] }> {
+  return parseJson(
+    await fetch(`${API_BASE}/api/v1/tasks`, {
+      headers: adminHeaders(jwt, adminKey),
     }),
   );
 }

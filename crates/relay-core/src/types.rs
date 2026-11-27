@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
+use crate::config::BillingMode;
 use crate::error::RelayError;
 
 /// Validated client IP newtype (zero-trust boundary).
@@ -260,12 +263,24 @@ pub struct ChannelUpsertReq {
     pub routing: ChannelRouting,
 }
 
+/// Optional channel-level model redirection map and daily call cap (2 fields, Rule of 4).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelPolicy {
+    #[serde(default)]
+    pub model_mapping: HashMap<String, String>,
+    #[serde(default)]
+    pub daily_limit: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelEndpoint {
     pub name: String,
     pub base_url: String,
     pub api_key: String,
+    #[serde(default)]
+    pub policy: ChannelPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -275,6 +290,80 @@ pub struct ChannelRouting {
     pub priority: i32,
     pub weight: u32,
     pub enabled: bool,
+}
+
+/// Model pricing rate numbers (4 fields, Rule of 4).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelRateSpec {
+    #[serde(default)]
+    pub input_per_m: u64,
+    #[serde(default)]
+    pub output_per_m: u64,
+    #[serde(default)]
+    pub unit_credits: u64,
+    #[serde(default)]
+    pub allow_free: bool,
+}
+
+/// Live admin pricing override applied immediately without restart (3 fields, Rule of 4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelPricingOverride {
+    pub model_id: String,
+    #[serde(default)]
+    pub billing_mode: BillingMode,
+    pub rates: ModelRateSpec,
+}
+
+impl ModelPricingOverride {
+    /// Detect potential cost-inversion or misconfigured zero-price anomalies.
+    pub fn anomaly_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        let id = self.model_id.to_ascii_lowercase();
+        if !self.rates.allow_free {
+            match self.billing_mode {
+                BillingMode::Token if self.rates.input_per_m == 0 && self.rates.output_per_m == 0 => {
+                    warnings.push("付费按 Token 模型输入与输出费率均为 0，存在成本倒挂风险".into());
+                }
+                BillingMode::PerCall if self.rates.unit_credits == 0 => {
+                    warnings.push("付费按次模型 unit_credits 为 0，将回退最低 1 积分".into());
+                }
+                BillingMode::PerSecond if self.rates.unit_credits < 15 && id.starts_with("veo-") => {
+                    warnings.push("Veo 按秒单价低于 15 积分/秒，可能低于 Vertex 上游成本".into());
+                }
+                _ => {}
+            }
+        }
+        warnings
+    }
+}
+
+/// Unified async multimodal task identity & routing metadata (4 fields, Rule of 4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AsyncTaskMeta {
+    pub username: String,
+    pub task_type: String,
+    pub model: String,
+    pub provider_op: String,
+}
+
+/// Unified async multimodal task execution outcome & timestamps (4 fields, Rule of 4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AsyncTaskResult {
+    pub credits_charged: u64,
+    pub result_json: String,
+    pub created_unix: i64,
+    pub updated_unix: i64,
+}
+
+/// Unified async multimodal task record stored in `relay_async_tasks` (4 fields, Rule of 4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AsyncTaskRecord {
+    pub id: String,
+    pub status: String,
+    pub meta: AsyncTaskMeta,
+    pub result: AsyncTaskResult,
 }
 
 /// Admin batch redemption code creation (<= 4 fields, deny_unknown_fields).

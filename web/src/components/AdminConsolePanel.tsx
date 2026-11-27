@@ -21,14 +21,19 @@ import {
   adminListUsers,
   adminMintResellKeys,
   adminProbeChannel,
+  adminResetModelPricing,
   adminSyncModels,
   adminTopupUser,
   adminUpdateUserRole,
   adminUpsertChannel,
+  adminUpsertModelPricing,
+  fetchModels,
   type AdminUserSummary,
+  type BillingMode,
   type ChannelItem,
   type ChannelProbeResp,
   type HealthResp,
+  type ModelItem,
   type UserRole,
 } from "../api";
 
@@ -81,6 +86,7 @@ export function AdminConsolePanel({
   onToast,
 }: Props) {
   const [channels, setChannels] = useState<ChannelItem[]>([]);
+  const [models, setModels] = useState<ModelItem[]>([]);
   const [probeMap, setProbeMap] = useState<Record<string, ChannelProbeResp>>({});
   const [users, setUsers] = useState<AdminUserSummary[]>([]);
   const [busy, setBusy] = useState(false);
@@ -95,6 +101,18 @@ export function AdminConsolePanel({
   const [chModels, setChModels] = useState(PROVIDER_PRESETS[0].models);
   const [chPriority, setChPriority] = useState("90");
   const [chEnabled, setChEnabled] = useState(true);
+  const [chDailyLimit, setChDailyLimit] = useState("0");
+  const [chMappingText, setChMappingText] = useState("");
+  const [editingExisting, setEditingExisting] = useState(false);
+
+  // Live Model Pricing Override form
+  const [priceModelId, setPriceModelId] = useState("veo-3.1-fast-generate-001");
+  const [priceBillingMode, setPriceBillingMode] = useState<BillingMode>("per_second");
+  const [priceInputPerM, setPriceInputPerM] = useState("150");
+  const [priceOutputPerM, setPriceOutputPerM] = useState("150");
+  const [priceUnitCredits, setPriceUnitCredits] = useState("20");
+  const [priceAllowFree, setPriceAllowFree] = useState(false);
+  const [priceWarnings, setPriceWarnings] = useState<string[]>([]);
 
   // Resell API Key Batch Minting
   const [resellCount, setResellCount] = useState("5");
@@ -122,6 +140,21 @@ export function AdminConsolePanel({
     setChProvider(p.provider);
     setChBaseUrl(p.baseUrl);
     setChModels(p.models);
+    setChDailyLimit(p.provider === "vertex_ai" ? "30" : "0");
+    setChMappingText("");
+    setEditingExisting(false);
+  };
+
+  const pickPricingModel = (id: string, list: ModelItem[] = models) => {
+    setPriceModelId(id);
+    const m = list.find((x) => x.id === id);
+    if (!m) return;
+    setPriceBillingMode(m.billing_mode || "token");
+    setPriceInputPerM(String(m.input_per_m));
+    setPriceOutputPerM(String(m.output_per_m));
+    setPriceUnitCredits(String(m.unit_credits ?? 0));
+    setPriceAllowFree(m.allow_free);
+    setPriceWarnings([]);
   };
 
   const loadAll = async () => {
@@ -129,7 +162,12 @@ export function AdminConsolePanel({
     setBusy(true);
     try {
       if (section === "channels") {
-        setChannels(await adminListChannels(jwt, adminKey));
+        const [chs, ms] = await Promise.all([adminListChannels(jwt, adminKey), fetchModels()]);
+        setChannels(chs);
+        setModels(ms);
+        if (ms.length > 0 && !ms.some((x) => x.id === priceModelId)) {
+          pickPricingModel(ms[0].id, ms);
+        }
       } else if (section === "users") {
         setUsers(await adminListUsers(jwt, adminKey));
       }
@@ -144,8 +182,20 @@ export function AdminConsolePanel({
     if (hasAuth) loadAll();
   }, [section, isAdminRole, adminKey]);
 
+  const parseMappingLines = (raw: string): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const line of raw.split("\n")) {
+      const idx = line.indexOf("=");
+      if (idx <= 0) continue;
+      const k = line.slice(0, idx).trim();
+      const v = line.slice(idx + 1).trim();
+      if (k && v) out[k] = v;
+    }
+    return out;
+  };
+
   const handleSaveChannel = async () => {
-    if (!chKey.trim() && chProvider !== "moss_gpu") {
+    if (!chKey.trim() && !editingExisting && chProvider !== "moss_gpu") {
       return onToast(chProvider === "vertex_ai" ? "请粘贴 Vertex AI OAuth2 / Service Account JSON" : "请填写上游 API Key");
     }
     setBusy(true);
@@ -156,7 +206,11 @@ export function AdminConsolePanel({
         endpoint: {
           name: chName.trim() || chId.trim(),
           base_url: chBaseUrl.trim(),
-          api_key: chKey.trim() || "moss-internal",
+          api_key: chKey.trim() || (editingExisting ? "" : "moss-internal"),
+          policy: {
+            model_mapping: parseMappingLines(chMappingText),
+            daily_limit: Math.max(0, Number(chDailyLimit) || 0),
+          },
         },
         routing: {
           models: chModels.split(",").map((s) => s.trim()).filter(Boolean),
@@ -166,6 +220,7 @@ export function AdminConsolePanel({
         },
       });
       setChKey("");
+      setEditingExisting(false);
       onToast(`渠道 ${chId} (${chProvider}) 已热更新至统一 Key 池！`);
       loadAll();
     } catch (e) {
@@ -183,8 +238,53 @@ export function AdminConsolePanel({
     setChModels(c.meta.models.join(","));
     setChPriority(String(c.meta.priority ?? 90));
     setChEnabled(c.meta.enabled);
+    setChDailyLimit(String(c.policy?.daily_limit ?? 0));
+    const mapLines = Object.entries(c.policy?.model_mapping || {})
+      .map(([k, v]) => `${k}=${v}`)
+      .join("\n");
+    setChMappingText(mapLines);
     setChKey("");
-    onToast(`已载入渠道 ${c.id} 到上方表单，填入新凭证后点击保存即可更新`);
+    setEditingExisting(true);
+    onToast(`已载入渠道 ${c.id}（留空 API Key 则保留原凭证）`);
+  };
+
+  const handleSavePricing = async () => {
+    if (!priceModelId.trim()) return;
+    setBusy(true);
+    try {
+      const res = await adminUpsertModelPricing(jwt, adminKey, {
+        model_id: priceModelId.trim(),
+        billing_mode: priceBillingMode,
+        rates: {
+          input_per_m: Math.max(0, Number(priceInputPerM) || 0),
+          output_per_m: Math.max(0, Number(priceOutputPerM) || 0),
+          unit_credits: Math.max(0, Number(priceUnitCredits) || 0),
+          allow_free: priceAllowFree,
+        },
+      });
+      setPriceWarnings(res.warnings || []);
+      onToast(`模型 ${priceModelId} 实时改价已生效（零重启）！`);
+      loadAll();
+    } catch (e) {
+      onToast(`改价失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleResetPricing = async () => {
+    if (!priceModelId.trim()) return;
+    setBusy(true);
+    try {
+      await adminResetModelPricing(jwt, adminKey, priceModelId.trim());
+      setPriceWarnings([]);
+      onToast(`已恢复 ${priceModelId} 为 models.toml 默认价`);
+      loadAll();
+    } catch (e) {
+      onToast(`恢复失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const handleProbe = async (id: string) => {
@@ -305,17 +405,18 @@ export function AdminConsolePanel({
               <input className="input mono" placeholder="Base URL (自动填充，可自定义)" value={chBaseUrl} onChange={(e) => setChBaseUrl(e.target.value)} />
               <input className="input" placeholder="路由模型 (逗号分隔或 *)" value={chModels} onChange={(e) => setChModels(e.target.value)} />
               <input className="input" placeholder="优先级 (默认 90)" value={chPriority} onChange={(e) => setChPriority(e.target.value)} />
+              <input className="input" placeholder="每日调用上限 (0=不限)" value={chDailyLimit} onChange={(e) => setChDailyLimit(e.target.value)} />
               <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "0 6px" }}>
                 <input type="checkbox" checked={chEnabled} onChange={(e) => setChEnabled(e.target.checked)} />
                 启用该渠道
               </label>
             </div>
-            <div style={{ marginTop: 10 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10, marginTop: 10 }}>
               {chProvider === "vertex_ai" ? (
                 <textarea
                   className="input mono"
                   rows={4}
-                  placeholder='粘贴 Vertex AI Service Account 或 Authorized User OAuth2 JSON（含 "type": "service_account" 或 "authorized_user"）'
+                  placeholder={editingExisting ? "留空则保留现有 Vertex JSON；或粘贴新 JSON 覆盖" : '粘贴 Vertex AI Service Account 或 Authorized User OAuth2 JSON'}
                   value={chKey}
                   onChange={(e) => setChKey(e.target.value)}
                 />
@@ -323,11 +424,24 @@ export function AdminConsolePanel({
                 <input
                   className="input mono"
                   type="password"
-                  placeholder={chProvider === "moss_gpu" ? "MOSS Broker 可留空（内网直连）" : "上游 API Key"}
+                  placeholder={
+                    editingExisting
+                      ? "留空则保留原 API Key（仅修改映射/限额/路由）"
+                      : chProvider === "moss_gpu"
+                        ? "MOSS Broker 可留空（内网直连）"
+                        : "上游 API Key"
+                  }
                   value={chKey}
                   onChange={(e) => setChKey(e.target.value)}
                 />
               )}
+              <textarea
+                className="input mono"
+                rows={chProvider === "vertex_ai" ? 4 : 2}
+                placeholder={"模型重定向映射（可选，每行一条：对外模型名=上游模型名）\n例：deepseek-v3=deepseek-v4.1-flash"}
+                value={chMappingText}
+                onChange={(e) => setChMappingText(e.target.value)}
+              />
             </div>
             <button className="btn btn-primary" style={{ marginTop: 12 }} disabled={!hasAuth || busy} onClick={handleSaveChannel}>
               <Plus size={15} /> 保存 / 热接入统一渠道池
@@ -375,6 +489,14 @@ export function AdminConsolePanel({
                             <span className="mono" style={{ fontWeight: 700 }}>{c.id}</span>
                             <span className="pill pill-guest" style={{ fontSize: 11 }}>{c.provider}</span>
                             {!c.meta.enabled && <span className="pill pill-danger" style={{ fontSize: 11 }}>已停用</span>}
+                            {(c.policy?.daily_limit ?? 0) > 0 && (
+                              <span className="pill pill-vip" style={{ fontSize: 11 }}>日限 {c.policy?.daily_limit}</span>
+                            )}
+                            {Object.keys(c.policy?.model_mapping || {}).length > 0 && (
+                              <span className="pill pill-user" style={{ fontSize: 11 }}>
+                                映射 {Object.keys(c.policy?.model_mapping || {}).length}
+                              </span>
+                            )}
                           </div>
                           <div style={{ fontSize: 11.5, color: "var(--text-muted)" }}>{c.meta.models.join(", ")}</div>
                         </td>
@@ -432,6 +554,57 @@ export function AdminConsolePanel({
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+
+          {/* Live Model Pricing Override Card */}
+          <div className="card">
+            <div className="card-header">
+              <h3 className="card-title">
+                <Crown size={17} color="var(--primary)" /> 价目表实时调价（零重启生效 · 支持按 Token / 按次 / 按秒）
+              </h3>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
+              <select
+                className="select"
+                value={priceModelId}
+                onChange={(e) => pickPricingModel(e.target.value)}
+              >
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.id}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="select"
+                value={priceBillingMode}
+                onChange={(e) => setPriceBillingMode(e.target.value as BillingMode)}
+              >
+                <option value="token">按百万 Token (token)</option>
+                <option value="per_call">按次计费 (per_call)</option>
+                <option value="per_second">按秒计费 (per_second)</option>
+              </select>
+              <input className="input" placeholder="输入积分/1M" value={priceInputPerM} onChange={(e) => setPriceInputPerM(e.target.value)} />
+              <input className="input" placeholder="输出积分/1M" value={priceOutputPerM} onChange={(e) => setPriceOutputPerM(e.target.value)} />
+              <input className="input" placeholder="单次/每秒积分 (unit_credits)" value={priceUnitCredits} onChange={(e) => setPriceUnitCredits(e.target.value)} />
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "0 6px" }}>
+                <input type="checkbox" checked={priceAllowFree} onChange={(e) => setPriceAllowFree(e.target.checked)} />
+                允许免费调用
+              </label>
+            </div>
+            {priceWarnings.length > 0 && (
+              <div style={{ marginTop: 10, padding: "8px 12px", borderRadius: 8, background: "rgba(245,158,11,0.12)", color: "var(--warning)", fontSize: 12.5 }}>
+                ⚠️ 价格异常提醒：{priceWarnings.join("；")}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+              <button className="btn btn-primary" disabled={!hasAuth || busy} onClick={handleSavePricing}>
+                保存实时价目
+              </button>
+              <button className="btn" disabled={!hasAuth || busy} onClick={handleResetPricing}>
+                恢复 models.toml 默认价
+              </button>
             </div>
           </div>
 

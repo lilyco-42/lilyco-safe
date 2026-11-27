@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Film, KeyRound, Music, RefreshCw, Volume2 } from "lucide-react";
-import { fetchModels, type ModelItem } from "../../api";
+import { fetchAsyncTasks, fetchModels, type AsyncTaskRecord, type ModelItem } from "../../api";
 import {
   callRelayMusic,
   callRelaySpeech,
@@ -34,9 +34,19 @@ export function AudioVideoWorkbench({ apiKey, msg, onGoTokens, onToast }: AudioV
   const [videoOp, setVideoOp] = useState("");
   const [videoStatus, setVideoStatus] = useState("");
   const [videoBusy, setVideoBusy] = useState(false);
+  const [tasks, setTasks] = useState<AsyncTaskRecord[]>([]);
+
+  const loadTasks = () => {
+    const jwt = typeof window !== "undefined" ? window.localStorage.getItem("lain42_jwt") || "" : "";
+    if (!jwt) return;
+    fetchAsyncTasks(jwt)
+      .then((res) => setTasks(res.tasks || []))
+      .catch(() => {});
+  };
 
   useEffect(() => {
     fetchModels().then(setModels).catch(() => {});
+    loadTasks();
   }, []);
 
   const lyriaCredits = models.find((m) => m.id === "lyria-002")?.unit_credits ?? 15;
@@ -111,6 +121,7 @@ export function AudioVideoWorkbench({ apiKey, msg, onGoTokens, onToast }: AudioV
       setVideoOp(res.operation);
       setVideoStatus(`已入队：${res.operation}`);
       onToast("Veo 视频异步任务已启动");
+      loadTasks();
     } catch (e) {
       onToast(`视频任务失败：${(e as Error).message}`);
     } finally {
@@ -219,6 +230,65 @@ export function AudioVideoWorkbench({ apiKey, msg, onGoTokens, onToast }: AudioV
         </div>
         {videoStatus && <pre className="ms-code">{videoStatus}</pre>}
       </section>
+
+      {/* 4. Unified Async Task Queue History */}
+      {tasks.length > 0 && (
+        <section className="card ms-media-card" style={{ gridColumn: "1 / -1" }}>
+          <div className="ms-media-head" style={{ justifyContent: "space-between" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Film size={16} color="var(--primary)" />
+              <h3>统一异步任务记录（{tasks.length}）</h3>
+            </div>
+            <button type="button" className="btn btn-sm" onClick={loadTasks}>
+              <RefreshCw size={13} /> 刷新
+            </button>
+          </div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>任务 ID</th>
+                  <th>类型 / 模型</th>
+                  <th>状态</th>
+                  <th>消耗积分</th>
+                  <th style={{ textAlign: "right" }}>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tasks.slice(0, 12).map((t) => (
+                  <tr key={t.id}>
+                    <td className="mono" style={{ fontSize: 12 }}>{t.id}</td>
+                    <td>
+                      <span className="pill pill-guest" style={{ marginRight: 6 }}>{t.meta.task_type}</span>
+                      <span className="mono" style={{ fontSize: 12 }}>{t.meta.model}</span>
+                    </td>
+                    <td>
+                      <span className={`pill ${t.status === "succeeded" ? "pill-ok" : t.status === "failed" ? "pill-danger" : "pill-vip"}`}>
+                        {t.status}
+                      </span>
+                    </td>
+                    <td><b>{t.result.credits_charged}</b></td>
+                    <td style={{ textAlign: "right" }}>
+                      {t.meta.task_type === "video" && t.meta.provider_op && (
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          onClick={() => {
+                            setVideoOp(t.meta.provider_op);
+                            onToast(`已载入任务 ${t.id}，点击「查进度」即可查询实时状态`);
+                          }}
+                        >
+                          载入查询
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
     </div>
   );
 }
