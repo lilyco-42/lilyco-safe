@@ -154,7 +154,7 @@ where
     st.risk.check_key_spend(&key_rec.id, est_hold)?;
     let hold = st.ledger.pre_hold_paid(&key_rec, est_hold).await?;
 
-    let pool = st.ledger.find_live_channels(&model.id).await.unwrap_or_default();
+    let pool = st.ledger.find_live_channels_with_owner(&model.id, &model.channel_id).await.unwrap_or_default();
     let result = match st.router.call_chat_with_pool(&model, req, &pool).await {
         Ok(reply) => {
             let usage = reply.usage;
@@ -224,7 +224,7 @@ async fn open_chat_stream_pipeline(
     }));
     st.risk.check_key_spend(&key_rec.id, est_hold)?;
     let hold = st.ledger.pre_hold_paid(&key_rec, est_hold).await?;
-    let pool = st.ledger.find_live_channels(&model.id).await.unwrap_or_default();
+    let pool = st.ledger.find_live_channels_with_owner(&model.id, &model.channel_id).await.unwrap_or_default();
     match st.router.open_chat_stream_with_pool(&model, req, &pool).await {
         Ok(resp) => Ok((
             resp,
@@ -673,7 +673,7 @@ async fn forward_paid_endpoint<T: serde::Serialize>(
     let hold_cost = policy.apply_discount(model.compute_fixed_cost(1));
     st.risk.check_key_spend(&verified.record.id, hold_cost)?;
     let hold = st.ledger.pre_hold_paid(&verified.record, hold_cost).await?;
-    let pool = st.ledger.find_live_channels(&model.id).await.unwrap_or_default();
+    let pool = st.ledger.find_live_channels_with_owner(&model.id, &model.channel_id).await.unwrap_or_default();
     match st
         .router
         .forward_json_endpoint_with_pool(&model, path_suffix, body, &pool)
@@ -753,7 +753,7 @@ where
     let hold_cost = policy.apply_discount(model.compute_fixed_cost(units));
     st.risk.check_key_spend(&verified.record.id, hold_cost)?;
     let hold = st.ledger.pre_hold_paid(&verified.record, hold_cost).await?;
-    let pool = st.ledger.find_live_channels(&model.id).await.unwrap_or_default();
+    let pool = st.ledger.find_live_channels_with_owner(&model.id, &model.channel_id).await.unwrap_or_default();
     let mid = model.id.clone();
     let username = verified.record.username.clone();
     match call(model, pool).await {
@@ -942,7 +942,7 @@ pub async fn api_openai_responses(
         Ok(h) => h,
         Err(e) => return st.err_response(&headers, e),
     };
-    let pool = st.ledger.find_live_channels(&model.id).await.unwrap_or_default();
+    let pool = st.ledger.find_live_channels_with_owner(&model.id, &model.channel_id).await.unwrap_or_default();
     match st.router.forward_json_endpoint_with_pool(&model, "responses", &body, &pool).await {
         Ok(val) => {
             let p = val.pointer("/usage/input_tokens").and_then(|x| x.as_u64()).unwrap_or(est_tokens);
@@ -1039,7 +1039,7 @@ pub async fn api_gemini_v1beta(
         Ok(h) => h,
         Err(e) => return st.err_response(&headers, e),
     };
-    let pool = st.ledger.find_live_channels(&model.id).await.unwrap_or_default();
+    let pool = st.ledger.find_live_channels_with_owner(&model.id, &model.channel_id).await.unwrap_or_default();
     match st.router.call_gemini_v1beta_with_pool(&model, action, &body, &pool).await {
         Ok(val) => {
             let p = val.pointer("/usageMetadata/promptTokenCount").and_then(|x| x.as_u64()).unwrap_or(est_tokens);

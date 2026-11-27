@@ -702,6 +702,17 @@ impl RelayLedger {
 
     /// Return enabled DB-backed channels matching `model_id` (or wildcard `*`), ordered by priority/weight.
     pub async fn find_live_channels(&self, model_id: &str) -> Result<Vec<LiveChannel>, RelayError> {
+        self.find_live_channels_with_owner(model_id, "").await
+    }
+
+    /// Return enabled DB-backed channels for `model_id`, prioritizing the model's owning `owner_channel_id` first
+    /// so dynamically synced models (e.g. `deepseek-ai/*` from `siliconflow-cn`) always hit their owning channel
+    /// before falling back to wildcard (`*`) pools like OpenRouter.
+    pub async fn find_live_channels_with_owner(
+        &self,
+        model_id: &str,
+        owner_channel_id: &str,
+    ) -> Result<Vec<LiveChannel>, RelayError> {
         let mut rows = self
             .conn
             .query(
@@ -710,10 +721,14 @@ impl RelayLedger {
             )
             .await
             .map_err(map_db)?;
-        let mut out = Vec::new();
+        let mut owned = Vec::new();
+        let mut rest = Vec::new();
         while let Some(row) = rows.next().await.map_err(map_db)? {
+            let cid = col_str(&row, 0);
+            let is_owner = !owner_channel_id.is_empty() && cid == owner_channel_id;
             let models_csv = col_str(&row, 4);
-            let matched = models_csv.trim().is_empty()
+            let matched = is_owner
+                || models_csv.trim().is_empty()
                 || models_csv.split(',').any(|m| {
                     let p = m.trim();
                     p == "*"
@@ -724,16 +739,22 @@ impl RelayLedger {
             if matched && !api_key.is_empty() {
                 let model_mapping = serde_json::from_str(&col_str(&row, 5)).unwrap_or_default();
                 let daily_limit = col_u64(&row, 6);
-                out.push(LiveChannel {
-                    id: col_str(&row, 0),
+                let ch = LiveChannel {
+                    id: cid,
                     provider: col_str(&row, 1),
                     base_url: col_str(&row, 2),
                     api_key: SecretString::from(api_key),
                     policy: ChannelPolicy { model_mapping, daily_limit },
-                });
+                };
+                if is_owner {
+                    owned.push(ch);
+                } else {
+                    rest.push(ch);
+                }
             }
         }
-        Ok(out)
+        owned.extend(rest);
+        Ok(owned)
     }
 
     pub async fn create_redemptions(&self, req: &RedemptionCreateReq) -> Result<Vec<String>, RelayError> {
