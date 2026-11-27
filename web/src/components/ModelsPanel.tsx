@@ -75,10 +75,17 @@ export function ModelsPanel({ models, discountPct, onTestModel, onToast }: Props
     return (
       <section className="card">
         <div className="card-header">
-          <h3 className="card-title"><Sparkles size={17} /> 按公司选模型</h3>
-          <button className="btn btn-sm" type="button" onClick={() => setView("table")}>
-            全部模型与费率
-          </button>
+          <div className="seg-tabs">
+            <button type="button" className="seg-tab active" onClick={() => setView("companies")}>
+              <Sparkles size={14} /> 厂商名片墙
+            </button>
+            <button type="button" className="seg-tab" onClick={() => setView("table")}>
+              全部模型与费率 ({models.length})
+            </button>
+          </div>
+          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            兼容 OpenAI / Responses / Anthropic / Gemini 原生协议
+          </span>
         </div>
         <ModelCompanyCards onPick={onTestModel} textOnly={false} />
       </section>
@@ -89,10 +96,15 @@ export function ModelsPanel({ models, discountPct, onTestModel, onToast }: Props
     <div className="card">
       <div className="card-header">
         <div>
-          <h3 className="card-title">
-            <Sparkles size={17} color="var(--primary)" /> 模型广场与实时费率（{filtered.length} / {models.length}）
-          </h3>
-          <div style={{ fontSize: 12.5, color: "var(--text-muted)", marginTop: 3 }}>
+          <div className="seg-tabs" style={{ marginBottom: 8 }}>
+            <button type="button" className="seg-tab" onClick={() => setView("companies")}>
+              <Sparkles size={14} /> 厂商名片墙
+            </button>
+            <button type="button" className="seg-tab active" onClick={() => setView("table")}>
+              全部模型与费率 ({filtered.length} / {models.length})
+            </button>
+          </div>
+          <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>
             兼容 OpenAI <span className="mono">/v1/chat/completions</span> · <span className="mono">/v1/responses</span> · Anthropic <span className="mono">/v1/messages</span> · Gemini <span className="mono">/v1beta/models/*</span>
             {discountPct > 0 && (
               <span className="pill pill-vip" style={{ marginLeft: 8 }}>
@@ -102,7 +114,6 @@ export function ModelsPanel({ models, discountPct, onTestModel, onToast }: Props
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button className="btn btn-sm" type="button" onClick={() => setView("companies")}>公司卡片</button>
           <div style={{ position: "relative", width: 260 }}>
           <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: "var(--text-muted)" }} />
           <input

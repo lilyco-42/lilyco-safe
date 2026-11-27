@@ -404,13 +404,11 @@ export function AdminConsolePanel({
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {/* Admin Auth Bar */}
-      <div className="card" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <span style={{ fontWeight: 700, fontSize: 13.5 }}>管理员鉴权：</span>
-        {isAdminRole ? (
-          <span className="pill pill-admin">已通过 Admin JWT 自动授权</span>
-        ) : (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {/* Admin Auth Bar: only render full card when manual X-Admin-Key is needed */}
+      {!isAdminRole && (
+        <div className="card" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "12px 16px" }}>
+          <span style={{ fontWeight: 700, fontSize: 13 }}>管理员鉴权：</span>
           <input
             className="input mono"
             type="password"
@@ -419,11 +417,11 @@ export function AdminConsolePanel({
             value={adminKey}
             onChange={(e) => onAdminKeyChange(e.target.value)}
           />
-        )}
-        <button className="btn btn-sm btn-primary" disabled={!hasAuth || busy} onClick={loadAll}>
-          <RefreshCw size={13} /> 刷新数据
-        </button>
-      </div>
+          <button className="btn btn-sm btn-primary" disabled={!hasAuth || busy} onClick={loadAll}>
+            <RefreshCw size={13} /> 刷新数据
+          </button>
+        </div>
+      )}
 
       {/* Section 1: new-api style Segmented Tabs (Channels / Live Pricing / Resell Keys) + Slide-over Drawers */}
       {section === "channels" && (
